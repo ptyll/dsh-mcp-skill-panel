@@ -21,12 +21,25 @@ export type StateFile = {
     config?: {
         autoManage?: boolean;
         applyMode?: ApplyMode;
+        /**
+         * AI 中间层的按模型覆盖表（v0.6.0）。键为 `provider`（整个 provider）或
+         * `provider/model`（精确到模型）；值 true=启用中间层、false=禁用。
+         * 查表顺序 provider/model → provider → autoManage 总开关。
+         * 空表 = 旧行为（只看总开关），所以升级零配置零行为变化。
+         */
+        autoManageByRoute?: Record<string, boolean>;
+        /** 工具预算（面板红线提示用，如 grok 的 350 上限）；缺省不提示。 */
+        toolBudget?: number;
     };
 };
 /** 生效时机：immediate=立即（默认，下轮生效）；next-session=记意图、新会话/重启生效。 */
 export type ApplyMode = 'immediate' | 'next-session';
 /** 当前生效时机（缺省 immediate）。 */
 export declare function stateApplyMode(state: StateFile): ApplyMode;
+/** 按模型覆盖表（缺省空表 = 只看总开关）。 */
+export declare function stateAutoManageByRoute(state: StateFile): Record<string, boolean>;
+/** 工具预算（>0 的有限数才有效，否则视为未设置）。 */
+export declare function stateToolBudget(state: StateFile): number | undefined;
 export declare function readState(): Promise<StateFile>;
 export declare function writeState(state: StateFile): Promise<void>;
 /** AI-owner 标记读写：state.json 的 ai 段（entryId → {at}）。 */

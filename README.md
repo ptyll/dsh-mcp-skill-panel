@@ -258,6 +258,69 @@ node 半区 tsdown 必须 `external: [/^@deepseek-ai\//]`：内联 dsh-tools 会
 
 ## 📋 变更日志
 
+### v0.6.0（2026-09-15）— claude 兼容性修复 + 工具批量控制 + 按模型分流
+
+**1. 控制工具改名（破坏性，但修的是「claude 完全不可用」）**
+
+`mcp_search` / `mcp_call` → **`dsh_mcp_search` / `dsh_mcp_call`**。
+
+claude.ai 订阅网关把 `mcp_` 前缀当作 MCP connector 保留名，只要请求里出现这两个
+工具，整个请求被拒为 HTTP 400 `invalid_request_error`，而且错误文案被改写成
+「You're out of extra usage」—— 与配额毫无关系，极难定位。
+
+取证（用户会话日志，provider=claude）：
+
+| 请求工具数 | 含两个控制工具 | 结果 |
+| --- | --- | --- |
+| 484 / 485 / 30 | 否 | **111 次全部成功** |
+| 486 / 32 | 是 | **5 次全部 400** |
+
+同一会话 16 秒内：486（含）→400、484（不含）→正常、486（含）→400。与工具总数、
+请求体积无关（32 工具的最小集同样复现）。已排除：无 `type` 的属性节点（成功请求
+里同形状的 `observer_submit_assessment.assessment` 照常通过）、`integer` 类型、
+非 ASCII 描述、缺 `required`、请求体积。
+
+同批把 `dsh_mcp_call` 的 `arguments` 从 `type:'json'` 改为
+`type:'object' + additionalProperties`，消除无 `type` 标注的属性节点（防御性，
+非本次根因）。
+
+**2. 工具级批量禁用/启用**
+
+- 新端点 `POST /mcp/toolBulk`：`{serverName, disabled, toolNames?}`，省略
+  `toolNames` = 该 server 全部工具；对 state.json 只做一次读-改-写。
+- 面板工具列表加过滤框 + 「全部禁用 / 全部启用」；有过滤词时按钮只作用于筛出的
+  子集（450 工具的 server 上唯一可操作的工作流）。
+- **有效统计**：`McpRow.toolsEnabled/tokensEnabled` 与 `McpView.mcpToolsEnabledTotal/
+  mcpTokensEnabledTotal`。此前工具级禁用完全不反映在面板数字上（注册表不变，只在
+  装配时剔除），禁用 400 个工具后面板仍显示 450 —— 批量操作等于没有反馈。
+
+**3. 工具预算红线**
+
+`McpView.toolsAllTotal/toolsAllEnabled`（含非 MCP 工具）+ `config.toolBudget`。
+超预算时面板红字。针对 grok 单请求 350 工具上限这类硬限制。
+
+**4. AI 中间层按模型分流**
+
+- `state.json` 新增 `config.autoManageByRoute`：键为 `provider` 或
+  `provider/model`，查表顺序 `provider/model` → `provider` → 总开关。空表 =
+  旧行为，升级零配置零行为变化。
+- 判定改为**每次装配**进行，不再是进程级挂载/卸载 —— 两个不同模型的会话可能并发，
+  挂载粒度做不到按会话分流。控制工具按判定结果逐次投放。
+- 模型路由解析复刻 `dsh-api-session-controller` 的三级回退（modelSelection 投影
+  的 pending → 已落盘请求头 → 部署默认），所以切换模型后**紧接着那一轮**就生效，
+  没有 off-by-one。`sessionProjections` / `agentDefaultModel` 均按可选服务处理。
+- 挂载条件放宽为「总开关开 **或** 覆盖表存在 true 项」，否则总开关关时覆盖项
+  永远无法生效。
+- server 可见性过滤保持**无条件**：AI 临时启用的 server 对所有模型隐藏，否则
+  A 会话的保活启用会让 B 会话凭空多出一批工具、30 秒后又消失。
+- 新端点 `GET /models`（provider/模型目录 + 当前会话判定），`POST /config` 接受
+  `routeOverride` 与 `toolBudget`。
+
+**5. 工程**
+
+`scripts/setup-dsh-deps.mjs` 此前只支持 Windows（`cmd /c mklink`），POSIX 下直接
+失败；改为按平台分派 junction / symlink。
+
 ### v0.5.5（2026-09-08）— rc.1 空面板修复（standing 组合兜底）
 
 - 🐛 **空面板修复**：rc.1 起 preset 行挂 standing 组合、不再进 `ctx.loader.entries()`（实证 loader 156 行零 MCP），面板 `mcp[]==0` 空列表。`mcp.length===0` 时以当前会话 preset 的 standing 快照行补行（`compositionInventory` + preset 文本解析 `serverName/transport/超时`）。

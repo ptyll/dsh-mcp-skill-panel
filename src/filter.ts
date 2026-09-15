@@ -8,14 +8,23 @@
  *   查表 —— 避免对每个 mcp__ 工具重复遍历 loader entries（56 工具 × 10 entries）。
  * - 用户打开的 server（disabled=false 且非 AI 临时启用）→ 工具进上下文
  *   （用户启停 = 上下文占用 + 模型可见性开关；memory 高灵敏召回）
- * - 用户停用的 server（disabled=true）→ 过滤，模型经 mcp_search/mcp_call
- *   按需临时启用调用（中间层）
- * - AI 临时启用的 server（mcp_call 保活中）→ 仍过滤，保持按需不污染
+ * - 用户停用的 server（disabled=true）→ 过滤，模型经控制工具按需临时启用调用
+ * - AI 临时启用的 server（保活中）→ 仍过滤，保持按需不污染
  *
- * tools registry 不受影响，`tools.execute` 照常可对任意 `mcp__*` 调用。
+ * ## 按模型分流（v0.6.0）
+ *
+ * 两个控制工具（dsh_mcp_search / dsh_mcp_call）**不再随中间层整体挂载/卸载**，
+ * 而是每次装配按当前模型路由决定投放与否（`gateFor`）。原因：工具注册表是进程
+ * 级的一份，两个不同模型的会话可能并发，挂载/卸载做不到按会话分流。
+ *
+ * 注意 server 可见性过滤是**无条件**的，不随 gate 变化：AI 临时启用的 server
+ * 必须对所有模型隐藏。否则 A 会话的保活启用会让 B 会话（gate 关闭的模型）
+ * 凭空多出一批工具、30 秒后又消失 —— 与中间层无关的会话被反复打断前缀缓存。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { CONTROL_TOOL_NAMES } from './mcpcall'
 
 const MCP_TOOL_PREFIX = 'mcp__'
 
@@ -31,20 +40,26 @@ function serverOfMcp(name: string): string | null {
 export function installMcpVisibilityFilter(
   ctx: Context,
   buildVisibility: () => ReadonlyMap<string, boolean>,
+  gateFor: (agent: Agent | undefined) => boolean,
 ): () => void {
   return ctx.effect(() => {
     const off = ctx.root.on(
       'system-prompt/assemble',
       (
         assembly: PromptAssembly,
-        _context: unknown,
+        context: unknown,
         next: () => Promise<PromptAssembly>,
       ): Promise<PromptAssembly> => {
         if (assembly && Array.isArray(assembly.tools)) {
+          const agent = (context as { agent?: Agent } | undefined)?.agent
+          // 本次装配的模型是否使用中间层（控制工具投放与否）
+          const gateOn = gateFor(agent)
           // 每回合一次 loader 遍历构建可见性表，工具过滤全部 O(1) 查表
           const visibility = buildVisibility()
           assembly.tools = assembly.tools.filter((tool) => {
             const name = String(tool.name ?? '')
+            // 控制工具：只投放给 gate 打开的模型
+            if (CONTROL_TOOL_NAMES.has(name)) return gateOn
             if (!name.startsWith(MCP_TOOL_PREFIX)) return true
             const server = serverOfMcp(name)
             // 畸形工具名（解析不出 server）保守保留，不误伤

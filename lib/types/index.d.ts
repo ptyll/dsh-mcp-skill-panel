@@ -28,9 +28,11 @@
  */
 import Schema from '@deepseek-ai/schemastery';
 import type { Context } from '@deepseek-ai/cordis';
+import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Catalog } from './catalog';
 export { normalizeToolName, normalizeArguments, msgOf } from './mcpcall';
 import type { McpView, SkillsView } from './shared-types';
+import { type RouteDecision, type RouteServices } from './model-route';
 export type { McpView, SkillsView, McpRow, SkillRow } from './shared-types';
 export type { DomainCaches } from './collect';
 export { mergeSchemas, computeStatus } from './collect';
@@ -39,8 +41,10 @@ export { scanWorkspaceMcp } from './project-mcp';
 export { installProjectMcp, remountWorkspace, projectServerOwner, projectServerName } from './project-mcp';
 export { readState, writeState } from './state';
 export { applyPendingMcp, pendingMcp, pendingMcpCount, type PendingMcpEntry } from './pending';
-export { loadDisabledTools, setToolDisabled, isToolDisabled, disabledToolsOf } from './tool-disable';
+export { loadDisabledTools, setToolDisabled, setToolsDisabledBulk, isToolDisabled, disabledToolsOf } from './tool-disable';
 export { parsePresetMcpText } from './preset-mcp';
+export { resolveRoute, routeDecision, routeKey, type ModelRoute, type RouteDecision } from './model-route';
+export { MCP_SEARCH_TOOL, MCP_CALL_TOOL, CONTROL_TOOL_NAMES } from './mcpcall';
 export declare const name = "runtime-inventory";
 export declare const inject: string[];
 export interface Config {
@@ -68,10 +72,22 @@ export interface CatalogRuntime {
     persisting: boolean;
     /** 磁盘加载是否已完成（完成前跳过采集，防止空快照覆盖磁盘 last-good）。 */
     loaded: boolean;
-    /** AI 中间层当前生效状态（面板开关可动态切换）。 */
+    /** AI 中间层总开关当前值（面板可动态切换）。 */
     autoManage: boolean;
-    /** 动态切换 AI 中间层（过滤 + mcp_search/mcp_call + 回收器）。 */
-    applyAutoManage: (on: boolean) => void;
+    /** 按模型覆盖表当前值（键 provider 或 provider/model）。 */
+    autoManageByRoute: Record<string, boolean>;
+    /** 中间层是否已实际挂载（总开关关但有 true 覆盖项时仍会挂载）。 */
+    autoManageMounted: boolean;
+    /**
+     * 动态应用 AI 中间层配置（过滤 + 控制工具 + 回收器）。
+     * 挂载条件 = 总开关 on 或覆盖表里存在 true 项；具体某次装配是否生效
+     * 由 {@link CatalogRuntime.decisionFor} 按模型路由决定。
+     */
+    applyAutoManage: (on: boolean, byRoute?: Record<string, boolean>) => void;
+    /** 某 agent（缺省=当前解析不到）当前的中间层判定，面板与诊断共用。 */
+    decisionFor: (agent: Agent | undefined) => RouteDecision;
+    /** 可选服务 holder（sessionProjections / agentDefaultModel），路由解析用。 */
+    routeServices: RouteServices;
     /** 最近一次成功写盘时间（防抖合并用）。 */
     lastPersistAt: number | null;
     /** 防抖挂起的写盘 timer（ctx.timeout 创建，ctx 销毁自动清理）。 */

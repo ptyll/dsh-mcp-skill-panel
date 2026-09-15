@@ -721,9 +721,15 @@ export function makeRoutes(
               state.config.toolBudget = Math.round(parsed.toolBudget)
             }
             await writeState(state)
-            // 总开关与覆盖表任一变化都要重算挂载（覆盖表出现 true 项时即便总开关关也要挂载）
-            const master = typeof state.config.autoManage === 'boolean' ? state.config.autoManage : catalogRuntime.autoManage
-            catalogRuntime.applyAutoManage(master, stateAutoManageByRoute(state))
+            // 只有中间层相关字段变化才重挂：applyAutoManage 会 dispose/register 工具，
+            // 触发 tools/change → 整段前缀缓存失效。改 applyMode / toolBudget 与中间层
+            // 无关，不能顺带让用户付一次 miss。
+            const middlewareTouched = typeof parsed.autoManage === 'boolean' || parsed.routeOverride !== undefined
+            if (middlewareTouched) {
+              // 总开关与覆盖表任一变化都要重算挂载（覆盖表出现 true 项时即便总开关关也要挂载）
+              const master = typeof state.config.autoManage === 'boolean' ? state.config.autoManage : catalogRuntime.autoManage
+              catalogRuntime.applyAutoManage(master, stateAutoManageByRoute(state))
+            }
             invalidateMcp()
             return {
               autoManage: catalogRuntime.autoManage,

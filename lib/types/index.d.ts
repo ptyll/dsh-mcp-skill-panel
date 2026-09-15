@@ -39,7 +39,7 @@ export { mergeSchemas, computeStatus } from './collect';
 export { setRowFlag, setSkillFlag, rowDisabledState, syncPresetFiles, isValidSkillName, buildSkillMd } from './preset';
 export { scanWorkspaceMcp } from './project-mcp';
 export { installProjectMcp, remountWorkspace, projectServerOwner, projectServerName } from './project-mcp';
-export { readState, writeState } from './state';
+export { readState, writeState, stateMiddleLayerHides, stateAutoManageByRoute, stateToolBudget } from './state';
 export { applyPendingMcp, pendingMcp, pendingMcpCount, type PendingMcpEntry } from './pending';
 export { loadDisabledTools, setToolDisabled, setToolsDisabledBulk, isToolDisabled, disabledToolsOf } from './tool-disable';
 export { parsePresetMcpText } from './preset-mcp';
@@ -76,6 +76,8 @@ export interface CatalogRuntime {
     autoManage: boolean;
     /** 按模型覆盖表当前值（键 provider 或 provider/model）。 */
     autoManageByRoute: Record<string, boolean>;
+    /** 中间层生效时隐藏哪些 server：'disabled'=仅手动停用的（默认）；'all'=全部。 */
+    middleLayerHides: 'disabled' | 'all';
     /** 中间层是否已实际挂载（总开关关但有 true 覆盖项时仍会挂载）。 */
     autoManageMounted: boolean;
     /**
@@ -83,7 +85,7 @@ export interface CatalogRuntime {
      * 挂载条件 = 总开关 on 或覆盖表里存在 true 项；具体某次装配是否生效
      * 由 {@link CatalogRuntime.decisionFor} 按模型路由决定。
      */
-    applyAutoManage: (on: boolean, byRoute?: Record<string, boolean>) => void;
+    applyAutoManage: (on: boolean, byRoute?: Record<string, boolean>, hides?: 'disabled' | 'all') => void;
     /** 某 agent（缺省=当前解析不到）当前的中间层判定，面板与诊断共用。 */
     decisionFor: (agent: Agent | undefined) => RouteDecision;
     /** 可选服务 holder（sessionProjections / agentDefaultModel），路由解析用。 */

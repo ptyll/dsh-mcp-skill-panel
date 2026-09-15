@@ -15,7 +15,7 @@ import { serverOfMcp } from './catalog'
 import type { McpCallController } from './mcpcall'
 import type { CatalogRuntime } from './index'
 import { messageOf } from './util'
-import { readState, stateToolBudget } from './state'
+import { readState, stateToolBudget, stateMiddleLayerHides } from './state'
 import { pendingMcp } from './pending'
 import { listPresetMcpRows } from './preset-mcp'
 
@@ -508,6 +508,7 @@ async function collectMcp(deps: Deps, sessionId: string | undefined): Promise<Mc
     autoManage: deps.catalogRuntime.autoManage,
     autoManageByRoute: { ...deps.catalogRuntime.autoManageByRoute },
     autoManageMounted: deps.catalogRuntime.autoManageMounted,
+    middleLayerHides: stateMiddleLayerHides(state ?? {}),
     // 当前会话实际生效的判定（面板顶部徽标：「本会话：开启 · grok/grok-4.6」）
     autoManageActive: (() => {
       const decision = deps.catalogRuntime.decisionFor(agent)

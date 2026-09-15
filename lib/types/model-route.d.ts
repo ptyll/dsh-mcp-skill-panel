@@ -43,10 +43,23 @@ interface DefaultModelLike {
         model?: unknown;
     };
 }
+/** llm 服务的最小契约（面板的 provider/模型目录用）。 */
+interface LlmLike {
+    listProviders(): Array<{
+        id: string;
+        name: string;
+    }>;
+    listModels(provider: string): Promise<Array<{
+        id: string;
+        name: string;
+    }>>;
+}
 /** 装配过滤同步读取的服务引用（ctx.inject 可选作用域维护）。 */
 export interface RouteServices {
     projections?: ProjectionsLike;
     defaultModel?: DefaultModelLike;
+    /** 面板 /models 端点用；cordis 对未 inject 的服务属性会抛错，必须经 inject 捕获。 */
+    llm?: LlmLike;
 }
 /**
  * 挂载可选服务捕获：服务在时填 holder，随作用域卸载时清空。

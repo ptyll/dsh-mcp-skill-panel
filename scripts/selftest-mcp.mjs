@@ -641,6 +641,15 @@ await checkAsync('setToolsDisabledBulk：重复名去重，批量与单点开关
   assert.equal(index.disabledToolsOf('bulk3').size, 0)
 })
 
+// ── v0.6.1：中间层隐藏范围 ────────────────────────────────────────────────
+check('stateMiddleLayerHides：缺省 disabled，只有显式 all 才切换', () => {
+  assert.equal(index.stateMiddleLayerHides({}), 'disabled')
+  assert.equal(index.stateMiddleLayerHides({ config: {} }), 'disabled')
+  assert.equal(index.stateMiddleLayerHides({ config: { middleLayerHides: 'all' } }), 'all')
+  // 非法值不得静默变成 all（会让所有模型突然失去全部 MCP 工具）
+  assert.equal(index.stateMiddleLayerHides({ config: { middleLayerHides: 'nonsense' } }), 'disabled')
+})
+
 if (failed) {
   console.log('\nselftest: FAILED')
   process.exit(1)

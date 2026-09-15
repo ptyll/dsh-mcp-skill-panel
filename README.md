@@ -258,6 +258,34 @@ node 半区 tsdown 必须 `external: [/^@deepseek-ai\//]`：内联 dsh-tools 会
 
 ## 📋 变更日志
 
+### v0.6.1（2026-09-15）— 中间层隐藏范围 + /models 的 inject 修复
+
+**1. `config.middleLayerHides`：中间层到底隐藏哪些 server**
+
+原行为（现为 `'disabled'`，仍是默认）只隐藏**手动停用**的 server；手动启用的
+server 对模型完全可见。于是「中间层开着、prompthelper 启用着」= 454 个工具照样
+全量注入，grok 直接撞上 `Maximum tools limit reached. 486 tools have been
+provided but the maximum is 350.`
+
+新增 `'all'`：对命中中间层的模型隐藏**全部** MCP server，一律经
+`dsh_mcp_search` / `dsh_mcp_call` 取用；server 保持挂载运行。
+
+关键在于「保持挂载」——用停用 server 来省上下文会连带把它对**所有**模型藏起来，
+而这里只改「这一次装配对这个模型」的可见性。所以下面这组配置第一次成立：
+
+| 模型 | 中间层 | 请求内工具数 |
+| --- | --- | --- |
+| grok | 开 | 30 内置 + 2 控制 = 32 |
+| claude（覆盖为关） | 关 | 30 内置 + 454 MCP = 484 |
+
+**2. `GET /models` 修复：`cannot get property "llm" without inject`**
+
+v0.6.0 直接读 `ctx.llm`，撞上 cordis 的服务访问守卫，按模型覆盖卡片整块报错、
+provider 列表为空。改为与 `sessionProjections` / `agentDefaultModel` 一致，经
+`ctx.inject` 捕获到 holder；服务缺失时降级为空列表而不是报错。
+
+**3. 面板里仍写着旧工具名 `mcp_search` / `mcp_call` 的说明文案已同步。**
+
 ### v0.6.0（2026-09-15）— claude 兼容性修复 + 工具批量控制 + 按模型分流
 
 **1. 控制工具改名（破坏性，但修的是「claude 完全不可用」）**

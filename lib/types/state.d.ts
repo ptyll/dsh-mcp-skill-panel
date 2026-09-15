@@ -30,6 +30,16 @@ export type StateFile = {
         autoManageByRoute?: Record<string, boolean>;
         /** 工具预算（面板红线提示用，如 grok 的 350 上限）；缺省不提示。 */
         toolBudget?: number;
+        /**
+         * 中间层生效时隐藏哪些 MCP server（v0.6.1）：
+         * - 'disabled'（默认，旧行为）：只隐藏用户手动停用的 server。手动启用的
+         *   server 仍直接可见（memory 高灵敏召回、filesystem 直接读写的用法）。
+         * - 'all'：对命中中间层的模型隐藏**全部** MCP server 的工具，一律经
+         *   dsh_mcp_search / dsh_mcp_call 按需取用。server 保持挂载运行 ——
+         *   这正是「grok 走中间层、claude 直连全部工具」能同时成立的原因：
+         *   停用 server 会连 claude 一起看不到，而这里只改装配可见性。
+         */
+        middleLayerHides?: 'disabled' | 'all';
     };
 };
 /** 生效时机：immediate=立即（默认，下轮生效）；next-session=记意图、新会话/重启生效。 */
@@ -38,6 +48,8 @@ export type ApplyMode = 'immediate' | 'next-session';
 export declare function stateApplyMode(state: StateFile): ApplyMode;
 /** 按模型覆盖表（缺省空表 = 只看总开关）。 */
 export declare function stateAutoManageByRoute(state: StateFile): Record<string, boolean>;
+/** 中间层隐藏范围（缺省 'disabled' = 旧行为）。 */
+export declare function stateMiddleLayerHides(state: StateFile): 'disabled' | 'all';
 /** 工具预算（>0 的有限数才有效，否则视为未设置）。 */
 export declare function stateToolBudget(state: StateFile): number | undefined;
 export declare function readState(): Promise<StateFile>;

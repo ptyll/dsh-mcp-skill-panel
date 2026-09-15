@@ -685,7 +685,14 @@ export function RuntimeInventorySection(props: Props): React.ReactElement {
 
       {view && tab === 'mcp' && (
         <>
-          <AutoManageCard on={(view as McpView).autoManage} busy={Boolean(busy.autoManage)} t={t} onToggle={toggleAutoManage} />
+          <AutoManageCard
+            on={(view as McpView).autoManage}
+            hides={(view as McpView).middleLayerHides}
+            busy={Boolean(busy.autoManage)}
+            t={t}
+            onToggle={toggleAutoManage}
+            loadMcp={loadMcp}
+          />
           <RouteOverridesCard state={view as McpView} t={t} loadMcp={loadMcp} />
           <ApplyTimingCard
             applyMode={applyMode}
@@ -733,11 +740,31 @@ function Badge(props: { color: string; bg: string; children: React.ReactNode }):
 
 function AutoManageCard(props: {
   on: boolean
+  hides: 'disabled' | 'all'
   busy: boolean
   t: Props['t']
   onToggle: () => void
+  loadMcp: () => void
 }): React.ReactElement {
-  const { on, busy, t, onToggle } = props
+  const { on, hides, busy, t, onToggle, loadMcp } = props
+  const [hidesBusy, setHidesBusy] = useState(false)
+  const [hidesErr, setHidesErr] = useState<string | null>(null)
+  const setHides = useCallback(
+    async (next: 'disabled' | 'all') => {
+      if (next === hides) return
+      setHidesBusy(true)
+      setHidesErr(null)
+      try {
+        await panelPost('/api/mcp-skill-panel/config', { middleLayerHides: next })
+        loadMcp()
+      } catch (error) {
+        setHidesErr(error instanceof Error ? error.message : String(error))
+      } finally {
+        setHidesBusy(false)
+      }
+    },
+    [hides, loadMcp],
+  )
   // 按钮与 MCP 卡片统一为「动作语义」配色（用户截图确认）：
   // 启用中=红「停用」、停用中=绿「启用」。注意 C.toggle 的参数语义是 disabled
   // （停用=绿），直接传 on 会得到相反效果 —— 必须反转传参 C.toggle(!on)。
@@ -763,6 +790,33 @@ function AutoManageCard(props: {
         </button>
       </div>
       <p style={C.cardDesc}>{on ? t('ri.autoManageDescOn') : t('ri.autoManageDescOff')}</p>
+      {on && (
+        <>
+          <div style={{ ...C.routeRow, borderTop: 0 }}>
+            <span style={C.routeName}>{t('ri.hidesLabel')}</span>
+            <span style={{ display: 'flex', gap: 4 }}>
+              <button
+                type="button"
+                style={{ ...C.routeSeg(hides === 'disabled'), ...(hidesBusy ? C.toggleDisabled : {}) }}
+                disabled={hidesBusy}
+                onClick={() => void setHides('disabled')}
+              >
+                {t('ri.hidesDisabled')}
+              </button>
+              <button
+                type="button"
+                style={{ ...C.routeSeg(hides === 'all'), ...(hidesBusy ? C.toggleDisabled : {}) }}
+                disabled={hidesBusy}
+                onClick={() => void setHides('all')}
+              >
+                {t('ri.hidesAll')}
+              </button>
+            </span>
+          </div>
+          <p style={C.hint}>{hides === 'all' ? t('ri.hidesDescAll') : t('ri.hidesDescDisabled')}</p>
+          {hidesErr && <div style={C.error}>{hidesErr}</div>}
+        </>
+      )}
     </div>
   )
 }

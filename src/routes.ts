@@ -9,7 +9,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { mkdir, readFile, writeFile, rename, access } from 'node:fs/promises'
 import { basename, dirname, join, parse as parsePath } from 'node:path'
 import { homedir } from 'node:os'
-import { readState, writeState, stateApplyMode, stateAutoManageByRoute, stateToolBudget, type ApplyMode } from './state'
+import { readState, writeState, stateApplyMode, stateAutoManageByRoute, stateMiddleLayerHides, stateToolBudget, type ApplyMode } from './state'
 import { setSkillFlag, rowDisabledState, isValidSkillName, buildSkillMd } from './preset'
 import { pendingMcp, applyPendingMcp } from './pending'
 import { findPresetRowByEntryId } from './preset-mcp'
@@ -683,6 +683,7 @@ export function makeRoutes(
               autoManage: catalogRuntime.autoManage,
               autoManageByRoute: stateAutoManageByRoute(state),
               autoManageMounted: catalogRuntime.autoManageMounted,
+              middleLayerHides: stateMiddleLayerHides(state),
               toolBudget: stateToolBudget(state) ?? null,
               applyMode: stateApplyMode(state),
               configAutoManage: config.autoManage ?? null,
@@ -698,6 +699,7 @@ export function makeRoutes(
               routeOverride?: { key?: string; value?: boolean | null }
               applyMode?: ApplyMode
               toolBudget?: number | null
+              middleLayerHides?: 'disabled' | 'all'
             }
             const state = await readState()
             state.config ??= {}
@@ -712,6 +714,9 @@ export function makeRoutes(
               else delete table[parsed.routeOverride.key]
               if (Object.keys(table).length === 0) delete state.config.autoManageByRoute
             }
+            if (parsed.middleLayerHides === 'disabled' || parsed.middleLayerHides === 'all') {
+              state.config.middleLayerHides = parsed.middleLayerHides
+            }
             if (parsed.applyMode === 'immediate' || parsed.applyMode === 'next-session') {
               state.config.applyMode = parsed.applyMode
             }
@@ -724,17 +729,21 @@ export function makeRoutes(
             // 只有中间层相关字段变化才重挂：applyAutoManage 会 dispose/register 工具，
             // 触发 tools/change → 整段前缀缓存失效。改 applyMode / toolBudget 与中间层
             // 无关，不能顺带让用户付一次 miss。
-            const middlewareTouched = typeof parsed.autoManage === 'boolean' || parsed.routeOverride !== undefined
+            const middlewareTouched =
+              typeof parsed.autoManage === 'boolean' ||
+              parsed.routeOverride !== undefined ||
+              parsed.middleLayerHides !== undefined
             if (middlewareTouched) {
               // 总开关与覆盖表任一变化都要重算挂载（覆盖表出现 true 项时即便总开关关也要挂载）
               const master = typeof state.config.autoManage === 'boolean' ? state.config.autoManage : catalogRuntime.autoManage
-              catalogRuntime.applyAutoManage(master, stateAutoManageByRoute(state))
+              catalogRuntime.applyAutoManage(master, stateAutoManageByRoute(state), stateMiddleLayerHides(state))
             }
             invalidateMcp()
             return {
               autoManage: catalogRuntime.autoManage,
               autoManageByRoute: stateAutoManageByRoute(state),
               autoManageMounted: catalogRuntime.autoManageMounted,
+              middleLayerHides: stateMiddleLayerHides(state),
               toolBudget: stateToolBudget(state) ?? null,
               applyMode: stateApplyMode(state),
             }
@@ -855,16 +864,12 @@ export function makeRoutes(
       path: `${API_PREFIX}/models`,
       handler: handle('GET', async (req) => {
         // 按模型分流的配置面：已注册 provider + 其模型目录 + 当前会话判定。
-        // ctx.llm 的 Context 增强来自 dsh-llm（未列入本仓库 devDependencies），
-        // 与 model-route.ts 同样走结构化断言，服务缺失时降级为空列表。
+        // llm 服务缺失（精简组合）时降级为空列表，卡片照常可用（只是没有可点的行）。
         const state = await readState()
         const byRoute = stateAutoManageByRoute(state)
-        const llm = (ctx as unknown as {
-          llm?: {
-            listProviders(): Array<{ id: string; name: string }>
-            listModels(provider: string): Promise<Array<{ id: string; name: string }>>
-          }
-        }).llm
+        // 经 ctx.inject 捕获的引用：直接读 ctx.llm 会抛
+        // 「cannot get property "llm" without inject」（cordis 的服务访问守卫）。
+        const llm = catalogRuntime.routeServices.llm
         const providers: Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }> = []
         if (llm) {
           let list: Array<{ id: string; name: string }> = []

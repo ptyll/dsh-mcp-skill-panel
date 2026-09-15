@@ -20,6 +20,13 @@
  * 注意 server 可见性过滤是**无条件**的，不随 gate 变化：AI 临时启用的 server
  * 必须对所有模型隐藏。否则 A 会话的保活启用会让 B 会话（gate 关闭的模型）
  * 凭空多出一批工具、30 秒后又消失 —— 与中间层无关的会话被反复打断前缀缓存。
+ *
+ * ## 隐藏范围（v0.6.1）
+ *
+ * `hideAll` 为真时，命中中间层的模型看不到**任何** mcp__ 工具（哪怕该 server
+ * 在面板里是启用状态），一律经控制工具按需取用；gate 关闭的模型不受影响，
+ * 照常直连。server 本身保持挂载运行 —— 用停用 server 来省上下文会连带把它对
+ * 所有模型藏起来，而这里只改「这一次装配对这个模型」的可见性。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
@@ -37,10 +44,16 @@ function serverOfMcp(name: string): string | null {
   return rest.slice(0, at)
 }
 
+/** 一次装配的中间层判定：是否生效 + 是否隐藏全部 MCP server。 */
+export interface AssemblyGate {
+  on: boolean
+  hideAll: boolean
+}
+
 export function installMcpVisibilityFilter(
   ctx: Context,
   buildVisibility: () => ReadonlyMap<string, boolean>,
-  gateFor: (agent: Agent | undefined) => boolean,
+  gateFor: (agent: Agent | undefined) => AssemblyGate,
 ): () => void {
   return ctx.effect(() => {
     const off = ctx.root.on(
@@ -52,15 +65,17 @@ export function installMcpVisibilityFilter(
       ): Promise<PromptAssembly> => {
         if (assembly && Array.isArray(assembly.tools)) {
           const agent = (context as { agent?: Agent } | undefined)?.agent
-          // 本次装配的模型是否使用中间层（控制工具投放与否）
-          const gateOn = gateFor(agent)
+          // 本次装配的模型是否使用中间层（控制工具投放与否 + 隐藏范围）
+          const gate = gateFor(agent)
           // 每回合一次 loader 遍历构建可见性表，工具过滤全部 O(1) 查表
           const visibility = buildVisibility()
           assembly.tools = assembly.tools.filter((tool) => {
             const name = String(tool.name ?? '')
             // 控制工具：只投放给 gate 打开的模型
-            if (CONTROL_TOOL_NAMES.has(name)) return gateOn
+            if (CONTROL_TOOL_NAMES.has(name)) return gate.on
             if (!name.startsWith(MCP_TOOL_PREFIX)) return true
+            // hideAll：命中中间层的模型一律不直连 MCP 工具
+            if (gate.on && gate.hideAll) return false
             const server = serverOfMcp(name)
             // 畸形工具名（解析不出 server）保守保留，不误伤
             return server === null ? true : (visibility.get(server) ?? true)

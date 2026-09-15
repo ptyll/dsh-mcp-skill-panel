@@ -68,6 +68,8 @@ export interface McpView {
     autoManageByRoute: Record<string, boolean>;
     /** 中间层是否已实际挂载（总开关关但存在 true 覆盖项时也会挂载）。 */
     autoManageMounted: boolean;
+    /** 中间层生效时隐藏哪些 server：'disabled'=仅手动停用的；'all'=全部 MCP。 */
+    middleLayerHides: 'disabled' | 'all';
     /** 当前会话（或缺省 agent）实际生效的判定与依据。 */
     autoManageActive: {
         on: boolean;

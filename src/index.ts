@@ -45,7 +45,7 @@ import type { McpView, SkillsView, McpRow, SkillRow } from './shared-types'
 import { createDomainCaches, getSchemasView, resolveCollectScopeKey, type DomainCaches } from './collect'
 import { listPresetMcpRows } from './preset-mcp'
 import { makeRoutes } from './routes'
-import { readState, writeState, setStateAiOwner, clearStateAiOwner, stateAutoManageByRoute } from './state'
+import { readState, writeState, setStateAiOwner, clearStateAiOwner, stateAutoManageByRoute, stateMiddleLayerHides } from './state'
 import { installRouteServices, resolveRoute, routeDecision, type ModelRoute, type RouteDecision, type RouteServices } from './model-route'
 import { syncPresetFiles } from './preset'
 import { applyPendingMcp } from './pending'
@@ -63,7 +63,7 @@ export { setRowFlag, setSkillFlag, rowDisabledState, syncPresetFiles, isValidSki
 export { scanWorkspaceMcp } from './project-mcp'
 // 项目 MCP 运行时装配（外部复用/端到端验证：手动安装、按工作空间重扫、owner 查询）
 export { installProjectMcp, remountWorkspace, projectServerOwner, projectServerName } from './project-mcp'
-export { readState, writeState } from './state'
+export { readState, writeState, stateMiddleLayerHides, stateAutoManageByRoute, stateToolBudget } from './state'
 // P1 会话边界：待生效队列与边界应用入口（selftest 直接测构建产物行为）
 export { applyPendingMcp, pendingMcp, pendingMcpCount, type PendingMcpEntry } from './pending'
 // 工具级禁用作用域（selftest 回归护栏：全局 vs 项目工作区隔离）
@@ -128,6 +128,8 @@ export interface CatalogRuntime {
   autoManage: boolean
   /** 按模型覆盖表当前值（键 provider 或 provider/model）。 */
   autoManageByRoute: Record<string, boolean>
+  /** 中间层生效时隐藏哪些 server：'disabled'=仅手动停用的（默认）；'all'=全部。 */
+  middleLayerHides: 'disabled' | 'all'
   /** 中间层是否已实际挂载（总开关关但有 true 覆盖项时仍会挂载）。 */
   autoManageMounted: boolean
   /**
@@ -135,7 +137,7 @@ export interface CatalogRuntime {
    * 挂载条件 = 总开关 on 或覆盖表里存在 true 项；具体某次装配是否生效
    * 由 {@link CatalogRuntime.decisionFor} 按模型路由决定。
    */
-  applyAutoManage: (on: boolean, byRoute?: Record<string, boolean>) => void
+  applyAutoManage: (on: boolean, byRoute?: Record<string, boolean>, hides?: 'disabled' | 'all') => void
   /** 某 agent（缺省=当前解析不到）当前的中间层判定，面板与诊断共用。 */
   decisionFor: (agent: Agent | undefined) => RouteDecision
   /** 可选服务 holder（sessionProjections / agentDefaultModel），路由解析用。 */
@@ -395,6 +397,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     // 初始值由下方 applyAutoManage 赋值（control/controller 构建后）
     autoManage: false,
     autoManageByRoute: {},
+    middleLayerHides: 'disabled',
     autoManageMounted: false,
     applyAutoManage: () => {},
     decisionFor: () => ({ on: false, source: 'master', route: undefined }),
@@ -509,14 +512,18 @@ export function apply(ctx: Context, config: Config = {}): void {
   catalogRuntime.routeServices = routeServices
   catalogRuntime.decisionFor = (agent: Agent | undefined): RouteDecision =>
     routeDecision(resolveRoute(routeServices, agent), catalogRuntime.autoManage, catalogRuntime.autoManageByRoute)
-  const gateFor = (agent: Agent | undefined): boolean => catalogRuntime.decisionFor(agent).on
+  const gateFor = (agent: Agent | undefined): { on: boolean; hideAll: boolean } => ({
+    on: catalogRuntime.decisionFor(agent).on,
+    hideAll: catalogRuntime.middleLayerHides === 'all',
+  })
 
   let autoDisposers: Array<() => void> = []
-  catalogRuntime.applyAutoManage = (on: boolean, byRoute?: Record<string, boolean>) => {
+  catalogRuntime.applyAutoManage = (on: boolean, byRoute?: Record<string, boolean>, hides?: 'disabled' | 'all') => {
     for (const d of autoDisposers) d()
     autoDisposers = []
     catalogRuntime.autoManage = on
     if (byRoute !== undefined) catalogRuntime.autoManageByRoute = byRoute
+    if (hides !== undefined) catalogRuntime.middleLayerHides = hides
     // 挂载条件不是「总开关 on」而是「有任何模型可能用到」：总开关关 + grok:true
     // 也要挂，否则覆盖项永远无法生效（工具注册表是进程级的一份）。
     const needed = on || Object.values(catalogRuntime.autoManageByRoute).some((value) => value === true)
@@ -545,14 +552,16 @@ export function apply(ctx: Context, config: Config = {}): void {
     'mcp-skill-panel: autoManage teardown',
   )
   // 初始：config 默认 → state.json 的面板值覆盖（异步，立即生效）。
-  catalogRuntime.applyAutoManage(Boolean(config.autoManage), {})
+  catalogRuntime.applyAutoManage(Boolean(config.autoManage), {}, 'disabled')
   void readState().then((state) => {
     const master = typeof state.config?.autoManage === 'boolean' ? state.config.autoManage : Boolean(config.autoManage)
     const byRoute = stateAutoManageByRoute(state)
-    catalogRuntime.applyAutoManage(master, byRoute)
+    const hides = stateMiddleLayerHides(state)
+    catalogRuntime.applyAutoManage(master, byRoute, hides)
     const overrides = Object.keys(byRoute).length
     ctx.logger.info(
-      `mcp-skill-panel: autoManage = ${master}${overrides > 0 ? ` (+${overrides} per-model override(s))` : ''} (from panel state)`,
+      `mcp-skill-panel: autoManage = ${master}, hides = ${hides}` +
+        `${overrides > 0 ? ` (+${overrides} per-model override(s))` : ''} (from panel state)`,
     )
   })
 

@@ -92,9 +92,17 @@ export const en: Record<string, string> = {
   'ri.autoManageOn': 'On',
   'ri.autoManageOff': 'Off',
   'ri.autoManageDescOn':
-    'Disabled MCP servers stay hidden from the model and are used on demand via mcp_search / mcp_call (keep-alive enable + idle reaping). Servers you enabled stay directly visible (e.g. memory for recall, filesystem for IO); AI-temporarily-enabled servers never pollute context. Manually enabled servers are never auto-disabled.',
+    'Disabled MCP servers stay hidden from the model and are used on demand via dsh_mcp_search / dsh_mcp_call (keep-alive enable + idle reaping). Servers you enabled stay directly visible (e.g. memory for recall, filesystem for IO); AI-temporarily-enabled servers never pollute context. Manually enabled servers are never auto-disabled.',
   'ri.autoManageDescOff':
     'Off: tools of enabled MCP servers are directly visible to the model (classic mode).',
+  // middle-layer hide scope
+  'ri.hidesLabel': 'Middle layer hides',
+  'ri.hidesDisabled': 'Disabled servers only',
+  'ri.hidesAll': 'All MCP servers',
+  'ri.hidesDescDisabled':
+    'Only servers you switched off go behind the middle layer. Servers you left on stay fully visible to the model — with a 450-tool server that alone blows past a provider tool cap.',
+  'ri.hidesDescAll':
+    'Every MCP server is hidden from models that use the middle layer, reachable via dsh_mcp_search / dsh_mcp_call. Servers keep running, so models with the middle layer turned off still see all their tools directly.',
   // per-model routing
   'ri.routeTitle': 'Per-model override',
   'ri.routeDesc':
@@ -227,9 +235,17 @@ export const zh: Record<string, string> = {
   'ri.autoManageOn': '已开启',
   'ri.autoManageOff': '已关闭',
   'ri.autoManageDescOn':
-    '停用的 MCP 服务器对模型隐藏，需要时经 mcp_search / mcp_call 按需调用（保活启用 + 空闲回收）；你手动打开的服务器保持模型可见（如 memory 高灵敏召回、filesystem 直接读写）；AI 临时启用的服务器不会污染上下文。用户手动启用的服务器不会被自动停用。',
+    '停用的 MCP 服务器对模型隐藏，需要时经 dsh_mcp_search / dsh_mcp_call 按需调用（保活启用 + 空闲回收）；你手动打开的服务器保持模型可见（如 memory 高灵敏召回、filesystem 直接读写）；AI 临时启用的服务器不会污染上下文。用户手动启用的服务器不会被自动停用。',
   'ri.autoManageDescOff':
     '关闭后：已启用 MCP 服务器的工具直接对模型可见（经典模式）。',
+  // 中间层隐藏范围
+  'ri.hidesLabel': '中间层隐藏',
+  'ri.hidesDisabled': '仅手动停用的 server',
+  'ri.hidesAll': '全部 MCP server',
+  'ri.hidesDescDisabled':
+    '只有你手动停用的 server 走中间层；保持启用的 server 对模型完全可见 —— 450 工具的 server 单个就会顶穿 provider 的工具数上限。',
+  'ri.hidesDescAll':
+    '对使用中间层的模型隐藏全部 MCP server，一律经 dsh_mcp_search / dsh_mcp_call 取用。server 保持运行，所以关闭了中间层的模型照样直接看到全部工具。',
   // 按模型分流
   'ri.routeTitle': '按模型覆盖',
   'ri.routeDesc':

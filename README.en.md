@@ -9,7 +9,7 @@
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-green.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.7.0-green.svg">
 </p>
 
 ---
@@ -29,7 +29,7 @@ A settings-page panel that turns your **MCP servers** and **Skill catalog** into
 | 📊 **Backfill while disabled** | Disabled MCP cards still show "N tools / ~N tokens in catalog" (last-good snapshot from the private catalog), so you can decide whether re-enabling is worth the context cost |
 | 🤖 **AI middle layer (optional switch)** | With `autoManage` on: **disabled MCP servers are hidden from the model** and used on demand via `mcp_search` (top-K catalog search with exact schemas) and `mcp_call` (keep-alive enable → in-plugin execute → idle 30s auto reaping); **servers you enabled stay visible** (e.g. memory for high-sensitivity recall, filesystem for direct IO); AI-temporarily-enabled servers never pollute context |
 | 🔒 **Your toggles are never overridden by the model** | The reaper only reclaims servers that *AI* enabled from a disabled state; servers you manually enabled are never auto-disabled (toggle clears AI marks) |
-| 💾 **Survives restarts** | MCP state is materialized into the preset composition file via the plugin state file (`~/.dsh/dsh-mcp-skill-panel/state.json`); catalog snapshots persist (`catalog.json`) and backfill after restart |
+| 💾 **Survives restarts** | MCP intent is stored by preset/row identity in `~/.dsh/dsh-mcp-skill-panel/state.json` and restored on mounted revisions; catalog snapshots persist (`catalog.json`) and backfill after restart |
 | ⚡ **Fast** | Toggles flip instantly (optimistic UI + server confirmation); domain caches with event-driven invalidation (`tools/change` / `skills/change`); the MCP tab never triggers skill discovery |
 | 🌐 **Bilingual UI** | All copy zh/en, follows the DSH UI language; light/dark theme aware |
 | 🪶 **Zero context footprint** | The plugin itself registers no model tools and consumes no injection surface (with the switch off it behaves like it isn't installed) |
@@ -74,13 +74,24 @@ flowchart TD
 
 ## 📦 Install
 
+Version **0.7.0** targets **DeepSeek Harness 0.2.0-rc.2**. The `v0.6.1` Git tag uses the retired preset API; reinstalling that tag does not upgrade its code. Install the new GitHub tag:
+
 ```sh
-dsh plugin --profile web add "github:lilyblessing/dsh-mcp-skill-panel#main"
+dsh plugin --profile web add github:ptyll/dsh-mcp-skill-panel#v0.7.0
 ```
 
-Prebuilt artifacts are committed (`lib/`), so the git-source one-liner installs without a build step. **Restart `dsh web`** after installing (bundles are composed at startup; hot reload does not apply), then open Settings → **MCP & Skill Manager**.
+Alternatively, download the archive from the [v0.7.0 release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.7.0), or build it from this checkout:
 
-> 📦 Also published on **npm**: `dsh-mcp-skill-panel` ([npm page](https://www.npmjs.com/package/dsh-mcp-skill-panel)). The npm release ships prebuilt artifacts and can be installed by package name, skipping the `allowBuilds` approval; the git-source one-liner above always works.
+```sh
+npm ci --ignore-scripts
+npm run typecheck && npm run build && npm run verify && npm test
+npm pack
+dsh plugin --profile web add ./dsh-mcp-skill-panel-0.7.0.tgz
+```
+
+For Desktop, replace `--profile web` with `--profile desktop` and fully quit Desktop before installing. **Restart Harness** after installation, then open Settings → **MCP & Skill Manager**. [Upgrade details and validation](docs/upgrade-harness-0.2.md).
+
+This fork release is published on GitHub, not npm. Use the GitHub tag or release archive for this version.
 
 ## 🚀 Usage
 
@@ -88,7 +99,7 @@ Prebuilt artifacts are committed (`lib/`), so the git-source one-liner installs 
 2. **MCP Servers** tab: each card shows server name, status badge (Active / Disabled / No tools / Failed), a **model-visibility badge** (in middle-layer mode: user-enabled = visible, disabled / AI-temporary = hidden), tool count and estimated token usage; toggle with the button on the right
 3. **Skills** tab: each card shows name, source, description, model-visibility badge; toggle on the right
 4. **AI Middle Layer switch**: on → disabled MCP servers are used on demand by the model (see modes above); off → classic direct mode
-5. **Manual management** (optional): edit the preset composition file (`disabled: true` rows) or SKILL.md frontmatter (`disable-model-invocation: true`) directly — takes effect on next restart/change
+5. **Manual management** (optional): edit declarative preset plugin rows through the profile patch, or SKILL.md frontmatter (`disable-model-invocation: true`). MCP toggles managed by the panel remain in its own state file.
 
 > Badge meanings: 🟢 Active (has tools) / ⚪ Disabled / 🟡 No tools (process running but empty tool list — usually a failed server start or empty implementation) / 🔴 Failed (neither running nor disabled).
 
@@ -130,9 +141,9 @@ flowchart LR
     R <--fetch--> P
 ```
 
-**MCP toggling**: each MCP row is a loader entry in the agent preset composition (`agent.cordis.yml`, `@deepseek-ai/dsh-mcp-client`, full id like `include:agent-presets:mcp-cheatengine`). `loader.resolve(id).update({ disabled })` disposes/restarts the entry in real time.
+**MCP toggling**: each MCP row is a live entry in a declarative preset revision owned by `dsh-agent-preset-registry`, or a Host loader entry. The panel combines both sources and gives preset handles their own preset/row/revision identity. `entry.update({ disabled })` disposes/restarts the exact row in real time.
 
-**Why persistence takes two steps**: the preset tree's `write()` is an explicit no-op, and `dsh-agent-presets` detects preset-file changes via a `{mtimeMs, size}` stamp — writing that file at runtime triggers a standing remount without disposing old instances (serverName conflicts, session creation failures — a 0.1.0 incident). So toggles only write the plugin state file, and the intent is materialized into the preset file during `apply` (early startup, before the standing mount).
+**Persistence**: declarative presets have no backing `agent.cordis.yml` file. The plugin stores desired state under `preset:<id>` and restores it after the Host loader settles and at the awaited `agent/created` boundary. Legacy file-backed rows retain their existing materialization path. Scope lookup happens for each session, so switching sessions or preset revisions does not reuse another session's tool view.
 
 **Middle-layer call chain** (`mcp_call` against a disabled server):
 
@@ -174,9 +185,9 @@ sequenceDiagram
 - SKILL.md files without frontmatter cannot be toggled (the provider ignores them anyway).
 - Tool counts/tokens are estimates (`JSON.stringify(parameters).length / 4`), approximate to the real injection surface.
 - After disabling, tools disappear immediately, but the current turn's cached request (if any) may still reference old schemas; the next request refreshes naturally.
-- **Persistence lag**: toggles take effect live; surviving a restart depends on materialization at next startup — if the plugin is hot-updated while sessions are running, this process does not materialize; the next restart applies it.
-- **Manually editing MCP rows in the preset file** (e.g. removing `disabled: true` by hand) removes that row from the plugin's management (your edit is respected at next startup).
-- Writing SKILL.md at runtime is safe (the skill-filesystem watcher expects edits); writing the preset composition file at runtime triggers the stamp-remount incident, which the plugin deliberately never does.
+- Existing sessions retain their preset revision when a definition is replaced. Panel handles address that revision; saved intent is restored on retained revisions at the next session boundary or restart.
+- Old file-keyed intent is preserved, but cannot be automatically associated with a new declarative preset. Reapply those MCP toggles after migrating the preset to Harness 0.2.
+- SKILL.md toggles still use the skill-filesystem watcher. Declarative MCP toggles write only the plugin state file.
 - The capability summary (`mcp_search` with no args) only covers servers that have a catalog snapshot or a configured `serverSummary`; servers that never started successfully (e.g. codegraph) are not listed.
 - **Control-endpoint auth**: writes are gated by a per-process random token (`x-panel-token`), auto-attached by the same-origin panel; GET reads stay open. The host webServer has no auth layer of its own — if you expose the listener on `0.0.0.0`, rely on external network isolation.
 
@@ -185,15 +196,15 @@ sequenceDiagram
 Dependencies are now **self-contained** (`@deepseek-ai/*` build-time deps are all in devDependencies; a plain registry install works — **no local DSH closure needed**):
 
 ```sh
-npm install --legacy-peer-deps --ignore-scripts   # one-time (npm run setup / junctions no longer required)
+npm ci --ignore-scripts   # pinned dependencies, including the DSH peer closure used in integration tests
 npm run typecheck  # tsc type check (Context service augmentation comes from @deepseek-ai devDeps)
 npm run build      # tsdown (node external all @deepseek-ai/*) -> tsc dts last (order matters)
 npm run verify     # artifact verification (no inlined TOOL_RUNTIME_SCHEDULER, client wrapper, lib/types)
-node scripts/selftest-mcp.mjs  # catalog unit tests
+npm test           # catalog, pending-state, real DSH rc.2 integration and smoke tests
 ```
 
 > **lib/ artifacts are rebuilt by GitHub Actions** (`.github/workflows/build.yml`): push your source, CI runs typecheck → build → verify → selftest and, on `main`, commits the fresh `lib/` back with `[skip ci]` — remember to `git pull` to collect it.
-> Why `--legacy-peer-deps`: runtime peers come from the DSH closure, while rc.6~rc.8 registry peer graphs conflict (ERESOLVE); why `--ignore-scripts`: esbuild ships platform binaries via optionalDependencies, no postinstall needed.
+> The DSH 0.2 peer graph is resolved in the lockfile; do not use `--legacy-peer-deps` for development/CI because integration tests need those peers. `--ignore-scripts` avoids dependency lifecycle scripts; platform build binaries arrive through optional dependencies.
 
 The node-half tsdown build must use `external: [/^@deepseek-ai\//]`: inlining dsh-tools creates a second `TOOL_RUNTIME_SCHEDULER` Symbol and breaks tool dispatch (same lesson as dsh-context-doctor).
 
@@ -201,6 +212,7 @@ The node-half tsdown build must use `external: [/^@deepseek-ai\//]`: inlining ds
 
 | Version | Content |
 | --- | --- |
+| 0.7.0 | Harness 0.2.0-rc.2: declarative preset registry, revision-qualified MCP handles, preset identity persistence, awaited agent/created initialization, per-session scope lookup, correct middle-layer calls across presets, and runtime integration tests. |
 | 0.5.0 | Prompt Cache optimization (P0+P1, issue #1): mid-session toggle miss warning banner (red severe variant for large packs, 12s auto-dismiss); apply-timing immediate / next-session (the latter records intent into a pending queue, applied at `agent/session-start` or on restart materialization — zero miss for the current session); toggles coalesced into a single toggleBatch (single invalidateMcp); applyPendingMcp state-residue fallback (rows with desired ≠ live after restart/hot-reload are applied; externally modified rows are respected and cleared) + new selftest-pending chain test (in CI); toggleBatch partial failures no longer abort the batch; updated cover image |
 | 0.4.9 | Dependency alignment to the DSH rc.8 line (full pipeline verified on rc.8): 10 `@deepseek-ai/*` devDeps 0.1.0-rc.6 → 0.1.0-rc.8, peers tightened (cordis ^4.0.1 stable / schemastery ^3.18.1 / dsh-scope ^0.1.0-rc.8); published on npm (first release 0.4.8, `repository` points back here) + new Trusted Publishing pipeline (publish.yml, OIDC, tokenless) |
 | 0.4.8 | Self-contained build + CI: 14 `@deepseek-ai/*` added to devDependencies (pinned to the rc.6 line; plain registry install enables typecheck/build/selftest without the local DSH closure); new GitHub Actions pipeline (typecheck → build → verify → selftest; on main push it rebuilds and commits `lib/` back with `[skip ci]`) |

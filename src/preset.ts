@@ -122,6 +122,7 @@ export async function syncPresetFiles(ctx: Context): Promise<number> {
   if (!mcp || Object.keys(mcp).length === 0) return 0
   let materialized = 0
   for (const [file, rows] of Object.entries(mcp)) {
+    if (file.startsWith('preset:')) continue
     let text: string
     try {
       text = await readFile(file, 'utf8')

@@ -5,7 +5,9 @@
 // 用法：node scripts/selftest-pending.mjs （在包根目录运行）
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { mkdtemp, writeFile, readFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import os, { tmpdir } from 'node:os'
+import { mock } from 'node:test'
+import { syncBuiltinESMExports } from 'node:module'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
@@ -15,8 +17,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 // state.ts 用 homedir() 定位 ~/.dsh/dsh-mcp-skill-panel/state.json：
 // 指向临时 HOME，确保自测不触碰真实用户状态（Windows 读 USERPROFILE）。
 const fakeHome = mkdtempSync(join(tmpdir(), 'dsh-pending-selftest-'))
-process.env.USERPROFILE = fakeHome
-if (process.platform !== 'win32') process.env.HOME = fakeHome
+mock.method(os, 'homedir', () => fakeHome)
+syncBuiltinESMExports()
 
 const index = await import(pathToFileURL(join(root, 'lib', 'index.js')).href)
 const { applyPendingMcp, pendingMcp, syncPresetFiles, writeState } = index
@@ -45,7 +47,7 @@ const presetText = (rows) =>
     .join('\n')
 
 const makeHarness = async ({ rows }) => {
-  const dir = join(tmpdir(), 'dsh-pending-case', String(caseNo++))
+  const dir = join(fakeHome, 'cases', String(caseNo++))
   mkdirSync(dir, { recursive: true })
   const file = join(dir, 'agent.cordis.yml')
   await writeFile(file, presetText(rows), 'utf8')
@@ -63,6 +65,7 @@ const makeHarness = async ({ rows }) => {
     },
   }))
   const ctx = {
+    root: { fiber: {} },
     loader: {
       entries: () => entries,
       resolve: (id) => entries.find((e) => e.id === id),
@@ -171,5 +174,6 @@ await checkAsync('外部修改行在物化链路中不被覆盖，条目保留�
 
 console.log(failed ? '\nselftest-pending: FAILED' : '\nselftest-pending: all checks passed')
 rmSync(fakeHome, { recursive: true, force: true })
-rmSync(join(tmpdir(), 'dsh-pending-case'), { recursive: true, force: true })
+mock.restoreAll()
+syncBuiltinESMExports()
 process.exit(failed ? 1 : 0)

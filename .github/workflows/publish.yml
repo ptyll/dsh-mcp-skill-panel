@@ -31,6 +31,8 @@ permissions:
 
 jobs:
   publish:
+    # Fork releases distribute GitHub assets only; the npm publisher belongs to upstream.
+    if: github.repository == 'lilyblessing/dsh-mcp-skill-panel'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -49,7 +51,7 @@ jobs:
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build (tsdown -> tsc dts)
         run: npm run build
@@ -58,7 +60,7 @@ jobs:
         run: npm run verify
 
       - name: Selftest (catalog / preset logic)
-        run: node scripts/selftest-mcp.mjs
+        run: npm test
 
       - name: Publish to npm (OIDC trusted publishing, provenance auto-attached)
         run: npm publish

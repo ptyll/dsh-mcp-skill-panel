@@ -1,18 +1,54 @@
-/**
- * rc.1 standing 组合 preset 行读取（空面板修复A，2026-09-08）。
- *
- * 背景：dsh 0.1.2-rc.1 起 preset 行挂在 standing 组合（agent scope 树），不再进
- * `ctx.loader.entries()`（实证 host/agent loader 156 行零 MCP，而
- * `compositionInventory()` 显示 standard-mcp 10 行、filesystem fiberState=2 运行中）。
- * collectMcp 只扫 loader → mcp[]==0 空面板；mcp_call 也因 findMcpEntry miss 而
- * 报「不在 loader 中」。
- *
- * 本模块只经 `ctx.agentPresets` 服务读数（compositionInventory/resolve/read），
- * 不直连 `livePresetMounts` 模块实例（host 与面板各装一份，模块态不共享），
- * 不产生运行时新依赖（type-only import，tsdown external 无影响）。
+/** DSH 0.2 declarative preset revisions and their live MCP entry handles.
+ * The registry import must remain external so it shares the host's mount set.
+ * Runtime handles are revision-qualified; persisted intent uses preset/row ids.
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Entry } from '@deepseek-ai/cordis-plugin-loader'
+import { livePresetMounts, standingMountFor, type PresetMount } from '@deepseek-ai/dsh-agent-preset-registry'
+import { isMcpEntry, serverNameOf, mcpEntryConfig } from './mcp-entry'
+
+/** A preset's state key is an identity, never a filesystem path in DSH 0.2. */
+export const presetStateKey = (presetId: string): string => `preset:${presetId}`
+
+export function selectedPresetMount(ctx: Context, agent?: Agent): PresetMount | undefined {
+  if (agent) return standingMountFor(agent.ctx)
+  const id = ctx.agentPresets.defaultId
+  return livePresetMounts(ctx.root.fiber).reverse().find((mount) => mount.presetId === id)
+}
+
+/** Host entries and the selected revision; different presets may reuse server names. */
+export function panelEntries(ctx: Context, agent?: Agent): Entry[] {
+  const entries = [...ctx.loader.entries()]
+  const mount = selectedPresetMount(ctx, agent)
+  if (mount) entries.push(...mount.tree.entries())
+  return entries
+}
+
+/** Exact live handles are required: registry inventory ids are relative to its tree. */
+export function resolvePanelEntry(ctx: Context, entryId: string): Entry | undefined {
+  try { return ctx.loader.resolve(entryId) } catch { /* preset tree */ }
+  for (const mount of livePresetMounts(ctx.root.fiber).reverse()) {
+    const entry = [...mount.tree.entries()].find((candidate) => presetLocation(ctx, candidate)?.entryId === entryId)
+    if (entry) return entry
+  }
+  return undefined
+}
+
+export function presetLocation(ctx: Context, entry: Entry): { file: string; rowId: string; entryId: string } | undefined {
+  for (const mount of livePresetMounts(ctx.root.fiber)) {
+    if (![...mount.tree.entries()].includes(entry)) continue
+    const owner = mount.tree.ctx.fiber.entry
+    const prefix = owner ? `${owner.id}:` : ''
+    const rowId = entry.id.slice(prefix.length)
+    return {
+      file: presetStateKey(mount.presetId), rowId,
+      entryId: `preset:${encodeURIComponent(mount.presetId)}:${encodeURIComponent(rowId)}:${mount.fiber.uid}`,
+    }
+  }
+  return undefined
+}
 
 /** preset 文件文本解析出的单行 MCP 配置（key = 短 rowId，如 mcp-filesystem）。 */
 export interface PresetMcpParsed {
@@ -59,7 +95,7 @@ export function parsePresetMcpText(text: string): Map<string, PresetMcpParsed> {
 
 /** standing 组合中的一行 MCP（inventory 行 + preset 文本配置的合并）。 */
 export interface PresetMcpRow {
-  /** inventory 长 id（含 standing 前缀，如 include:agent-presets:mcp-filesystem）。 */
+  /** Opaque, revision-qualified panel handle (not a Host loader id). */
   entryId: string
   /** preset 文件内短 id（如 mcp-filesystem；state.json row 键）。 */
   rowId: string
@@ -68,55 +104,31 @@ export interface PresetMcpRow {
   toolCallTimeoutMs?: number
   disabled: boolean
   running: boolean
-  /** preset 组合文件绝对路径（state.json mcp 段的文件键）。 */
+  /** Stable preset:<id> state key; no file is read or written. */
   file: string
 }
 
-/**
- * 列出某 preset 在 standing 组合中的全部 MCP 行。
- * inventory 给 entryId/enabled/fiberState，preset 文本给 serverName/transport/超时。
- */
+/** List MCP entries from the current mounted definition without a file lookup. */
 export async function listPresetMcpRows(
   ctx: Context,
   presetId: string,
 ): Promise<{ rows: PresetMcpRow[]; presetPath: string }> {
-  const presets = ctx.agentPresets as unknown as {
-    compositionInventory(): Promise<unknown>
-    resolve(id: string): Promise<unknown>
-    read(id: string): Promise<unknown>
-  }
-  const inventory = (await presets.compositionInventory()) as Array<{
-    id?: unknown
-    rows?: Array<{ entryId?: unknown; moduleName?: unknown; enabled?: unknown; fiberState?: unknown }>
-  }>
-  const found = (Array.isArray(inventory) ? inventory : []).find((c) => String(c?.id ?? '') === presetId)
-  if (!found) throw new Error(`preset "${presetId}" not in compositionInventory`)
-  const resolved = (await presets.resolve(presetId)) as { path?: unknown }
-  const presetPath = String(resolved?.path ?? '')
-  if (!presetPath) throw new Error(`preset "${presetId}" has no path`)
-  const text = String((await presets.read(presetId)) as unknown as string)
-  const parsed = parsePresetMcpText(text)
+  const mount = livePresetMounts(ctx.root.fiber).reverse().find((candidate) => candidate.presetId === presetId)
+  if (!mount) return { rows: [], presetPath: presetStateKey(presetId) }
+  const presetPath = presetStateKey(presetId)
   const rows: PresetMcpRow[] = []
-  for (const r of found.rows ?? []) {
-    if (String(r?.moduleName ?? '') !== '@deepseek-ai/dsh-mcp-client') continue
-    const entryId = String(r?.entryId ?? '')
-    if (!entryId) continue
-    const rowId = entryId.split(':').pop() ?? entryId
-    const info = parsed.get(rowId)
-    const serverName = info?.serverName ?? fallbackServerName(rowId)
-    // inventory enabled 恒为 boolean（mcp 行 disabled 无 !!js）；缺席/非 false 保守按启用处理
-    const disabled = (r as { enabled?: unknown })?.enabled === false
-    // fiberState：inventory 只在 fiber 存在时带该键；判 running 用 != null（防 null/0 误判）
-    const fiberState = (r as { fiberState?: unknown })?.fiberState
-    const running = fiberState !== undefined && fiberState !== null
+  for (const entry of mount.tree.entries()) {
+    if (!isMcpEntry(entry)) continue
+    const info = mcpEntryConfig(entry)
+    const rowId = presetLocation(ctx, entry)!.rowId
     rows.push({
-      entryId,
+      entryId: presetLocation(ctx, entry)!.entryId,
       rowId,
-      serverName,
-      transport: info?.transport ?? null,
-      toolCallTimeoutMs: info?.toolCallTimeoutMs,
-      disabled,
-      running,
+      serverName: serverNameOf(entry),
+      transport: typeof info?.transport === 'string' ? info.transport : null,
+      toolCallTimeoutMs: typeof info?.toolCallTimeoutMs === 'number' ? info.toolCallTimeoutMs : undefined,
+      disabled: entry.disabled,
+      running: entry.fiber !== undefined,
       file: presetPath,
     })
   }
@@ -131,47 +143,10 @@ export async function findPresetRowByEntryId(
   ctx: Context,
   entryId: string,
 ): Promise<{ presetId: string; row: PresetMcpRow; presetPath: string } | undefined> {
-  const presets = ctx.agentPresets as unknown as {
-    compositionInventory(): Promise<unknown>
-    resolve(id: string): Promise<unknown>
-    read(id: string): Promise<unknown>
-  }
-  const inventory = (await presets.compositionInventory()) as Array<{
-    id?: unknown
-    rows?: Array<{ entryId?: unknown; moduleName?: unknown; enabled?: unknown; fiberState?: unknown }>
-  }>
-  for (const c of Array.isArray(inventory) ? inventory : []) {
-    const pid = String(c?.id ?? '')
-    if (!pid) continue
-    const hit = (c.rows ?? []).find(
-      (r) => String(r?.entryId ?? '') === entryId && String(r?.moduleName ?? '') === '@deepseek-ai/dsh-mcp-client',
-    )
-    if (!hit) continue
-    const resolved = (await presets.resolve(pid)) as { path?: unknown }
-    const presetPath = String(resolved?.path ?? '')
-    if (!presetPath) continue
-    const text = String((await presets.read(pid)) as unknown as string)
-    const parsed = parsePresetMcpText(text)
-    const rowId = entryId.split(':').pop() ?? entryId
-    const info = parsed.get(rowId)
-    const serverName = info?.serverName ?? fallbackServerName(rowId)
-    const disabled = (hit as { enabled?: unknown })?.enabled === false
-    const hitFiber = (hit as { fiberState?: unknown })?.fiberState
-    const running = hitFiber !== undefined && hitFiber !== null
-    return {
-      presetId: pid,
-      presetPath,
-      row: {
-        entryId,
-        rowId,
-        serverName,
-        transport: info?.transport ?? null,
-        toolCallTimeoutMs: info?.toolCallTimeoutMs,
-        disabled,
-        running,
-        file: presetPath,
-      },
-    }
+  for (const mount of livePresetMounts(ctx.root.fiber).reverse()) {
+    const { rows, presetPath } = await listPresetMcpRows(ctx, mount.presetId)
+    const row = rows.find((candidate) => candidate.entryId === entryId)
+    if (row) return { presetId: mount.presetId, row, presetPath }
   }
   return undefined
 }

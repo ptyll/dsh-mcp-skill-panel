@@ -4,9 +4,8 @@ name: build
 # 链路：typecheck → build(tsdown→tsc dts) → verify → selftest → （main push 时）自动回写 lib 产物。
 #
 # 关键参数（与本地探针一致）：
-#   npm ci --legacy-peer-deps --ignore-scripts
-#   - --legacy-peer-deps：registry 上 rc.6/rc.7 peer 图互相咬（ERESOLVE），而运行时 peer 由
-#     DSH 闭包注入；类型解析只需包本体在。
+#   npm ci --ignore-scripts
+#   - DSH 0.2 的 peer 闭包也供真实 registry/tools 服务集成测试使用。
 #   - --ignore-scripts：防 postinstall；esbuild 走 optionalDependencies 平台二进制，无需脚本。
 #
 # 产物回写使用 [skip ci] + push paths 不含 lib/**，故不会触发本 workflow 循环。
@@ -51,7 +50,7 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
+        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Typecheck
         run: npm run typecheck
@@ -67,6 +66,9 @@ jobs:
 
       - name: Selftest (P1 session-boundary apply chain)
         run: node scripts/selftest-pending.mjs
+
+      - name: Selftest (DSH 0.2.0-rc.2 runtime integration)
+        run: node scripts/selftest-harness.mjs
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -84,7 +86,7 @@ jobs:
         # protect-main ruleset 要求 PR + status checks：默认 GITHUB_TOKEN 无法直推 main。
         # 以 dsh-ci-bot App token 推送（ruleset bypass list 已授权该 App 整规则集绕过）。
         # 仅 main push 事件执行此步骤：PR 事件（含 fork PR）不触达 secrets 与本步骤。
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.repository == 'lilyblessing/dsh-mcp-skill-panel' && github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
@@ -95,7 +97,8 @@ jobs:
         # 回写只改 lib/**，不在 push paths 内 → 不会重新触发本工作流；
         # actor 守卫（App bot 自身回写不再执行本步骤）为双保险。
         if: >-
-          github.ref == 'refs/heads/main' && github.event_name == 'push'
+          github.repository == 'lilyblessing/dsh-mcp-skill-panel'
+          && github.ref == 'refs/heads/main' && github.event_name == 'push'
           && github.actor != 'dsh-ci-bot[bot]'
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}

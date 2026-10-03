@@ -23,6 +23,7 @@ import type { JsonValue } from '@deepseek-ai/dsh-util-values'
 import type { Catalog, SearchHit } from './catalog'
 import { searchCatalog, listServer } from './catalog'
 import { isToolDisabled } from './tool-disable'
+import { serverNameOf, mcpEntryConfig } from './mcp-entry'
 
 /** 空闲回收器扫描周期（ms）。 */
 const REAPER_INTERVAL_MS = 10_000
@@ -129,18 +130,12 @@ export interface McpControlCtx {
   persistCatalog(): Promise<void>
 
   /** 按 serverName 反查 loader entry；无则 undefined。 */
-  resolveEntry(serverName: string): Entry | undefined
+  resolveEntry(serverName: string, agent?: Agent): Entry | undefined
+  /** Persisted diagnostic owner identity; preset handles include the revision. */
+  entryKey?(entry: Entry): string
   /** server 自己的注册/调用超时（读 entry config 的 toolCallTimeoutMs，缺省回退）。 */
   serverTimeoutMs(serverName: string): number
 
-  /**
-   * rc.1 standing 组合兜底超时（窄场景）：loader 有行但缺 toolCallTimeoutMs 时，
-   * 从 preset 快照补读。loader 无行（mcp_call 预设行）仍走「不在 loader 中」返回，
-   * 预设行直通调用是后续修复，本 PR 定为仅面板修复（见 toggleMcp 预设分支注释）。
-   * 返回 undefined = preset 也无该 server，调用方回退默认超时。
-   * 调用方应做 TTL 缓存（inventory+resolve+read 较重），见 index.ts 闭包。
-   */
-  presetTimeoutMs?(serverName: string): Promise<number | undefined>
 
   /** AI-owner 标记：上次自动开启该 entry 的时间戳。 */
   setAiOwner(entryId: string, at: number): Promise<void>
@@ -151,21 +146,21 @@ export interface McpControlCtx {
 }
 
 interface ControllerState {
-  refCounts: Map<string, number>
-  lastUsed: Map<string, number>
-  aiEnabled: Set<string>
+  refCounts: Map<Entry, number>
+  lastUsed: Map<Entry, number>
+  aiEnabled: Set<Entry>
 }
 
 export interface McpCallController {
   /** 保活启用：disabled 时开启并记录 AI owner。返回本次是否由 AI 开启。 */
   ensureEnabled(serverName: string): Promise<boolean>
   /** 该 server 当前是否由 AI 临时启用（mcp_call 保活中）——装配过滤据此保持其不可见。 */
-  isAiEnabled(serverName: string): boolean
+  isAiEnabled(serverName: string, agent?: Agent): boolean
   /**
    * 用户手动打开该 server：清除 AI 临时启用标记（aiEnabled/引用计数/lastUsed +
    * state.json 的 ai owner），使其转为「用户打开」语义 —— 模型立即可见、回收器不再回收。
    */
-  markUserEnabled(serverName: string): void
+  markUserEnabled(serverName: string, entry?: Entry): void
   /** 完整调用流程，返回给模型的文本结果（不会 throw，错误也转文本）。 */
   call(
     serverName: string,
@@ -239,10 +234,10 @@ async function ensureEnabled(
   entry: Entry,
 ): Promise<boolean> {
   const wasDisabled = entry.disabled
-  const entryId = entry.id
+  const entryId = control.entryKey?.(entry) ?? entry.id
   if (wasDisabled) {
     await entry.update({ disabled: false })
-    state.aiEnabled.add(serverName)
+    state.aiEnabled.add(entry)
     await control.setAiOwner(entryId, Date.now())
     ctx.logger.info?.(`mcp-skill-panel: AI enabled MCP server "${serverName}"`)
   }
@@ -313,64 +308,57 @@ async function restore(
   control: McpControlCtx,
   ctx: Context,
   state: ControllerState,
-  serverName: string,
-  entryId: string,
+  entry: Entry,
 ): Promise<void> {
   // 用户中途手动打开（markUserEnabled）会清除 AI 标记 → 该 server 已转交用户管理，
   // 本次调用不再拥有它，绝不能恢复 disabled（否则关闭用户手动打开的 server，违反
   // 「用户启停不被模型干预」承诺）。引用计数等残留一并清掉。
-  if (!state.aiEnabled.has(serverName)) {
-    state.refCounts.delete(serverName)
-    state.lastUsed.delete(serverName)
+  const serverName = serverNameOf(entry)
+  if (!state.aiEnabled.has(entry)) {
+    state.refCounts.delete(entry)
+    state.lastUsed.delete(entry)
     return
   }
   try {
-    const entry = control.resolveEntry(serverName)
-    if (entry && entry.id === entryId && !entry.disabled) {
+    if (!entry.disabled) {
       await entry.update({ disabled: true })
     }
-    await control.clearAiOwner(entryId)
+    await control.clearAiOwner(control.entryKey?.(entry) ?? entry.id)
   } catch (error) {
     ctx.logger.warn?.(`mcp-skill-panel: restore disabled for "${serverName}" failed: ${msgOf(error)}`)
   } finally {
-    state.aiEnabled.delete(serverName)
-    state.lastUsed.delete(serverName)
-    state.refCounts.delete(serverName)
+    state.aiEnabled.delete(entry)
+    state.lastUsed.delete(entry)
+    state.refCounts.delete(entry)
   }
 }
 
 function startIdleReaper(control: McpControlCtx, ctx: Context, state: ControllerState): () => void {
   return ctx.interval(() => {
     const now = Date.now()
-    for (const server of [...state.aiEnabled]) {
-      const refCount = state.refCounts.get(server) ?? 0
+    for (const entry of [...state.aiEnabled]) {
+      const server = serverNameOf(entry)
+      const refCount = state.refCounts.get(entry) ?? 0
       if (refCount > 0) continue
-      const last = state.lastUsed.get(server) ?? 0
+      const last = state.lastUsed.get(entry) ?? 0
       if (now - last < control.keepAliveMs) continue
-      const entry = control.resolveEntry(server)
-      if (!entry) {
-        state.aiEnabled.delete(server)
-        state.refCounts.delete(server)
-        state.lastUsed.delete(server)
-        continue
-      }
-      const entryId = entry.id
+      const entryId = control.entryKey?.(entry) ?? entry.id
       void (async () => {
         try {
           if (!entry.disabled) await entry.update({ disabled: true })
           // 二次检查：await 让出事件循环期间可能有新 call() 接手（refCount 升到 1），
           // 此时放弃本轮回收，不清 owner 不打日志。
-          if ((state.refCounts.get(server) ?? 0) > 0) return
+          if ((state.refCounts.get(entry) ?? 0) > 0) return
           await control.clearAiOwner(entryId)
           ctx.logger.info?.(`mcp-skill-panel: idle-reaped MCP server "${server}"`)
         } catch (error) {
           ctx.logger.warn?.(`mcp-skill-panel: idle reaper disable "${server}" failed: ${msgOf(error)}`)
         } finally {
           // 仅在无新调用接手时才删除状态，防止把新 call() 的计数清掉。
-          if ((state.refCounts.get(server) ?? 0) === 0) {
-            state.aiEnabled.delete(server)
-            state.refCounts.delete(server)
-            state.lastUsed.delete(server)
+          if ((state.refCounts.get(entry) ?? 0) === 0) {
+            state.aiEnabled.delete(entry)
+            state.refCounts.delete(entry)
+            state.lastUsed.delete(entry)
           }
         }
       })()
@@ -384,9 +372,9 @@ function startIdleReaper(control: McpControlCtx, ctx: Context, state: Controller
  */
 export function createMcpCallController(ctx: Context, caches: McpControlCtx): McpCallController {
   const state: ControllerState = {
-    refCounts: new Map<string, number>(),
-    lastUsed: new Map<string, number>(),
-    aiEnabled: new Set<string>(),
+    refCounts: new Map<Entry, number>(),
+    lastUsed: new Map<Entry, number>(),
+    aiEnabled: new Set<Entry>(),
   }
 
   const controller: McpCallController = {
@@ -396,16 +384,17 @@ export function createMcpCallController(ctx: Context, caches: McpControlCtx): Mc
       return ensureEnabled(caches, ctx, state, serverName, entry)
     },
 
-    isAiEnabled(serverName): boolean {
-      return state.aiEnabled.has(serverName)
+    isAiEnabled(serverName, agent): boolean {
+      const entry = caches.resolveEntry(serverName, agent)
+      return entry !== undefined && state.aiEnabled.has(entry)
     },
 
-    markUserEnabled(serverName): void {
-      state.aiEnabled.delete(serverName)
-      state.refCounts.delete(serverName)
-      state.lastUsed.delete(serverName)
-      const entry = caches.resolveEntry(serverName)
-      if (entry) void caches.clearAiOwner(entry.id)
+    markUserEnabled(serverName, entry = caches.resolveEntry(serverName)): void {
+      if (!entry) return
+      state.aiEnabled.delete(entry)
+      state.refCounts.delete(entry)
+      state.lastUsed.delete(entry)
+      void caches.clearAiOwner(caches.entryKey?.(entry) ?? entry.id)
     },
 
     async call(serverName, toolName, args, agent, signal, explicitTimeoutMs) {
@@ -417,11 +406,11 @@ export function createMcpCallController(ctx: Context, caches: McpControlCtx): Mc
       if (isToolDisabled(name, workspace)) {
         return `MCP 工具 ${serverName}.${bareTool} 已被禁用（请在 MCP 管理面板打开该工具后再调用）`
       }
-      const entry = caches.resolveEntry(serverName)
-      if (!entry) return `未知 MCP server：${serverName}（不在 loader 中）`
-      const entryId = entry.id
-      const presetTimeout = caches.presetTimeoutMs ? await caches.presetTimeoutMs(serverName).catch(() => undefined) : undefined
-      const timeoutMs = explicitTimeoutMs ?? presetTimeout ?? caches.serverTimeoutMs(serverName)
+      const entry = caches.resolveEntry(serverName, agent)
+      if (!entry) return `未知 MCP server：${serverName}（不在当前预设中）`
+      const configuredTimeout = mcpEntryConfig(entry)?.toolCallTimeoutMs
+      const timeoutMs = explicitTimeoutMs ??
+        (typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : DEFAULT_TOOL_TIMEOUT_MS)
 
       let aiOwned = false
       try {
@@ -429,8 +418,8 @@ export function createMcpCallController(ctx: Context, caches: McpControlCtx): Mc
       } catch (error) {
         return `启用 MCP server "${serverName}" 失败：${msgOf(error)}`
       }
-      state.refCounts.set(serverName, (state.refCounts.get(serverName) ?? 0) + 1)
-      state.lastUsed.set(serverName, Date.now())
+      state.refCounts.set(entry, (state.refCounts.get(entry) ?? 0) + 1)
+      state.lastUsed.set(entry, Date.now())
 
       let failed = false
       try {
@@ -445,9 +434,9 @@ export function createMcpCallController(ctx: Context, caches: McpControlCtx): Mc
           name,
           arguments: args,
           agent,
-          signal,
+          signal: signal ?? new AbortController().signal,
         })) as { isError?: boolean; error?: unknown; content?: unknown } | undefined
-        state.lastUsed.set(serverName, Date.now())
+        state.lastUsed.set(entry, Date.now())
         if (result && result.isError) {
           failed = true
           return `MCP ${serverName}.${bareTool} 调用失败：${msgOf((result as { error?: unknown }).error ?? 'unknown error')}`
@@ -458,11 +447,11 @@ export function createMcpCallController(ctx: Context, caches: McpControlCtx): Mc
         failed = true
         return `MCP ${serverName}.${bareTool} 调用异常：${msgOf(error)}（提示：tool 参数应传该 server 上的裸名；server/tool 是否存在可先 ${MCP_SEARCH_TOOL} 确认）`
       } finally {
-        const next = (state.refCounts.get(serverName) ?? 1) - 1
-        if (next <= 0) state.refCounts.delete(serverName)
-        else state.refCounts.set(serverName, next)
+        const next = (state.refCounts.get(entry) ?? 1) - 1
+        if (next <= 0) state.refCounts.delete(entry)
+        else state.refCounts.set(entry, next)
         // 本次 AI 启用的，失败且无并发 → 恢复原状态
-        if (failed && aiOwned && next <= 0) void restore(caches, ctx, state, serverName, entryId)
+        if (failed && aiOwned && next <= 0) void restore(caches, ctx, state, entry)
       }
     },
 
@@ -472,8 +461,8 @@ export function createMcpCallController(ctx: Context, caches: McpControlCtx): Mc
 
     status() {
       const out: Array<{ server: string; refCount: number; lastUsed: number }> = []
-      for (const server of state.aiEnabled) {
-        out.push({ server, refCount: state.refCounts.get(server) ?? 0, lastUsed: state.lastUsed.get(server) ?? 0 })
+      for (const entry of state.aiEnabled) {
+        out.push({ server: serverNameOf(entry), refCount: state.refCounts.get(entry) ?? 0, lastUsed: state.lastUsed.get(entry) ?? 0 })
       }
       out.sort((a, b) => a.server.localeCompare(b.server))
       return out

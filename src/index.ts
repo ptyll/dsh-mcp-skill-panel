@@ -28,6 +28,7 @@
  */
 import Schema from '@deepseek-ai/schemastery'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
+import { livePresetMounts } from '@deepseek-ai/dsh-agent-preset-registry'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -43,7 +44,7 @@ export { normalizeToolName, normalizeArguments, msgOf } from './mcpcall'
 import { isMcpEntry, serverNameOf, mcpEntryConfig } from './mcp-entry'
 import type { McpView, SkillsView, McpRow, SkillRow } from './shared-types'
 import { createDomainCaches, getSchemasView, resolveCollectScopeKey, type DomainCaches } from './collect'
-import { listPresetMcpRows } from './preset-mcp'
+import { panelEntries, presetLocation } from './preset-mcp'
 import { makeRoutes } from './routes'
 import { readState, writeState, setStateAiOwner, clearStateAiOwner, stateAutoManageByRoute, stateMiddleLayerHides } from './state'
 import { installRouteServices, resolveRoute, routeDecision, type ModelRoute, type RouteDecision, type RouteServices } from './model-route'
@@ -165,8 +166,8 @@ export interface CatalogRuntime {
 }
 
 /** 从 loader entries 反查某 serverName 对应的 mcp 行（serverName 取自 config）。 */
-function findMcpEntry(ctx: Context, serverName: string): Entry | undefined {
-  for (const entry of ctx.loader.entries()) {
+function findMcpEntry(ctx: Context, serverName: string, agent?: Agent): Entry | undefined {
+  for (const entry of panelEntries(ctx, agent)) {
     if (!isMcpEntry(entry)) continue
     if (serverNameOf(entry) === serverName) return entry
   }
@@ -269,33 +270,36 @@ async function snapshotEnabled(ctx: Context, runtime: CatalogRuntime, caches: Do
     }
     runtime.diag.lastMcpTools = mcpTools
     runtime.diag.lastScope = mcpTools > 0
-    for (const entry of ctx.loader.entries()) {
-      if (!isMcpEntry(entry)) continue
-      if (entry.disabled) continue
-      const serverName = serverNameOf(entry)
-      let tools: CatalogEntry[]
-      try {
-        tools = snapshotFromSchemas(schemas, serverName)
-      } catch {
-        continue // 采集失败：last-good，保留旧快照
+    const entryViews = [
+      { entries: [...ctx.loader.entries()], schemas: getSchemasView(ctx, caches, undefined, 500) },
+      ...livePresetMounts(ctx.root.fiber).map((mount) => ({
+        entries: [...mount.tree.entries()], schemas: getSchemasView(ctx, caches, mount.key, 500),
+      })),
+    ]
+    const alive = new Set<string>()
+    for (const view of entryViews) {
+      for (const entry of view.entries) {
+        if (!isMcpEntry(entry)) continue
+        const serverName = serverNameOf(entry)
+        alive.add(serverName)
+        if (entry.disabled) continue
+        let tools: CatalogEntry[]
+        try {
+          tools = snapshotFromSchemas(view.schemas, serverName)
+        } catch {
+          continue // 采集失败：last-good，保留旧快照
+        }
+        const prev = next[serverName]
+        if (prev && prev.source === 'live' && sameToolList(prev.tools, tools)) continue
+        // Preserve the last good catalog when a scope is empty during teardown/startup.
+        if (tools.length === 0) continue
+        next[serverName] = { tools, fetchedAt: Date.now(), source: 'live' }
+        changed = true
       }
-      const prev = next[serverName]
-      if (prev && prev.source === 'live' && sameToolList(prev.tools, tools)) continue
-      // last-good（v0.4.6 加强）：空采集（tools 为空）一律不写盘 —— 无论 prev 是否存在。
-      // 原守卫只在 prev 有数据时保留，但 prev 因外部清空/时序丢失后，空快照会续写污染
-      // last-good（0.4.5 实测：某次快照 loader 视图为空 → prune 清空 → 空快照续写）。
-      if (tools.length === 0) continue
-      next[serverName] = { tools, fetchedAt: Date.now(), source: 'live' }
-      changed = true
     }
     // 失效清理（v0.4.5 → v0.4.6 修复）：
     // 保护：loader 视图为空（组合未挂载 / 启动时序 / realm 隔离异常）时跳过 prune，
     // 绝不删除 last-good —— 0.4.5 曾因 alive 集合为空把 catalog 全部清空并写盘。
-    const alive = new Set<string>()
-    for (const entry of ctx.loader.entries()) {
-      if (!isMcpEntry(entry)) continue
-      alive.add(serverNameOf(entry))
-    }
     if (alive.size > 0) {
       for (const key of Object.keys(next)) {
         if (!alive.has(key)) {
@@ -321,9 +325,6 @@ async function snapshotEnabled(ctx: Context, runtime: CatalogRuntime, caches: Do
 function buildMcpControl(ctx: Context, runtime: CatalogRuntime, config: Config, caches: DomainCaches): McpControlCtx {
   // 默认值与 Config schema 的 .default() 一致：schema 生效后 config 必有值，
   // ?? 是「config 未经 schema 直接传入」时的防御性兜底（P2-10 收敛说明）。
-  // preset 超时缓存（presetId+serverName → 超时/ms，有效 60s）：inventory+resolve+read
-  // 每次 mcp_call 都做太重，key 含 presetId（切 preset 即换 key，天然失效）。
-  const presetTimeoutCache = new Map<string, { at: number; timeout: number | undefined }>()
   return {
     keepAliveMs: config.keepAliveMs ?? 30_000,
     searchLimitDefault: config.searchLimitDefault ?? 5,
@@ -334,26 +335,9 @@ function buildMcpControl(ctx: Context, runtime: CatalogRuntime, config: Config, 
       runtime.catalog = catalog
     },
     persistCatalog: () => persistCatalog(() => ctx, runtime),
-    resolveEntry: (serverName) => findMcpEntry(ctx, serverName),
+    resolveEntry: (serverName, agent) => findMcpEntry(ctx, serverName, agent),
+    entryKey: (entry) => presetLocation(ctx, entry)?.entryId ?? entry.id,
     serverTimeoutMs: (serverName) => serverTimeoutMs(ctx, serverName),
-    presetTimeoutMs: async (serverName) => {
-      // rc.1 standing 组合兜底（窄场景）：仅 loader 有行但缺 toolCallTimeoutMs 时补读；
-      // loader 无行的 mcp_call 预设行仍返回「不在 loader 中」（预设行直通是后续修复）。
-      try {
-        const agent = ctx.agents.roots()[0] ?? ctx.agents.list()[0]
-        const presetId = agent ? (ctx.agentPresets.composedPreset(agent.ctx) ?? null) : null
-        if (!presetId) return undefined
-        const key = `${presetId}\0${serverName}`
-        const hit = presetTimeoutCache.get(key)
-        if (hit && Date.now() - hit.at < 60_000) return hit.timeout
-        const { rows } = await listPresetMcpRows(ctx, presetId)
-        const timeout = rows.find((r) => r.serverName === serverName)?.toolCallTimeoutMs
-        presetTimeoutCache.set(key, { at: Date.now(), timeout })
-        return timeout
-      } catch {
-        return undefined
-      }
-    },
     setAiOwner: (entryId, at) => setStateAiOwner(entryId, at),
     clearAiOwner: (entryId) => clearStateAiOwner(entryId),
     snapshotEnabled: () => snapshotEnabled(ctx, runtime, caches),
@@ -498,12 +482,12 @@ export function apply(ctx: Context, config: Config = {}): void {
   // 装配可见性（v0.4.2+）：每回合构建一次 server → 可见性 Map（单次 loader 遍历），
   // 过滤时 O(1) 查表。用户打开的 server 可见（disabled=false 且非 AI 临时启用）；
   // 停用或 AI 临时启用的 server 对模型过滤，经 mcp_search/mcp_call 按需调用。
-  const buildVisibility = (): ReadonlyMap<string, boolean> => {
+  const buildVisibility = (agent?: Agent): ReadonlyMap<string, boolean> => {
     const map = new Map<string, boolean>()
-    for (const entry of ctx.loader.entries()) {
+    for (const entry of panelEntries(ctx, agent)) {
       if (!isMcpEntry(entry)) continue
       const serverName = serverNameOf(entry)
-      map.set(serverName, !entry.disabled && !controller.isAiEnabled(serverName))
+      map.set(serverName, !entry.disabled && !controller.isAiEnabled(serverName, agent))
     }
     return map
   }
@@ -565,32 +549,30 @@ export function apply(ctx: Context, config: Config = {}): void {
     )
   })
 
-  // P1 会话边界生效（v0.5.0）：next-session 模式下，新会话首次请求前应用待生效队列。
-  // agent/session-start 是 Scoped<Agent> 的 emit，root 监听可收到；应用失败保留队列，
-  // 由下次边界或「立即应用」端点重试。entry.update 触发 tools/change → 新会话前缀自建
-  // （无缓存可破坏）。immediate 模式不产生待办，此监听零副作用。
+  // DSH 0.2 awaits agent/created before releasing queued input. Serialize
+  // concurrent creations so each first request sees completed MCP changes.
   ctx.effect(() => {
-    let guard = false
+    let boundary = Promise.resolve()
+    const applyBoundary = () => {
+      boundary = boundary.then(async () => {
+        const count = await applyPendingMcp({ ctx, controller })
+        caches.invalidateMcp()
+        caches.invalidateSkills()
+        if (count > 0) ctx.logger.info(`runtime-inventory: applied ${count} pending MCP change(s) at session boundary`)
+      }).catch((error: unknown) => {
+        ctx.logger.warn(`runtime-inventory: session-boundary apply failed: ${messageOf(error)}`)
+      })
+      return boundary
+    }
     const off = ctx.root.on(
-      'agent/session-start',
-      () => {
-        if (guard) return
-        guard = true
-        void applyPendingMcp({ ctx, controller })
-          .then((count) => {
-            if (count > 0) {
-              caches.invalidateMcp()
-              ctx.logger.info(`runtime-inventory: applied ${count} pending MCP change(s) at session boundary`)
-            }
-          })
-          .catch((error: unknown) => {
-            ctx.logger.warn(`runtime-inventory: session-boundary apply failed: ${messageOf(error)}`)
-          })
-          .finally(() => {
-            guard = false
-          })
-      },
+      'agent/created',
+      async () => { await applyBoundary() },
     )
+    // apply() itself must finish before the Host Loader can settle.
+    void ctx.loader.await().then(async () => {
+      if (ctx.agents.list().length === 0) await applyBoundary()
+      await snapshotEnabled(ctx, catalogRuntime, caches)
+    }).catch((error: unknown) => ctx.logger.warn(`runtime-inventory: startup restore failed: ${messageOf(error)}`))
     return off
   }, 'runtime-inventory: session-boundary apply')
 

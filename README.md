@@ -9,10 +9,12 @@
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.4-green.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.7.0-green.svg">
 </p>
 
 ---
+
+> **v0.7.0 / DSH 0.2.0-rc.2**：迁移到声明式 `dsh-agent-preset-registry`，启停直接操作当前预设代际，状态按 preset/row 保存；新会话使用可等待的 `agent/created`。旧 `v0.6.1` tag 不支持此 API。详见 [升级说明](docs/upgrade-harness-0.2.md) 和 [English README](README.en.md)。
 
 ## ✨ 是什么
 
@@ -90,8 +92,8 @@ flowchart TD
 - **立即生效**（默认）：切换在**下一轮对话**即生效，该轮起工具前缀变更 → **前缀 KV-Cache 100% 失效**，该轮按 miss 费率计费（约为 hit 的 **5 ~ 12.5 倍**）。适合需要马上释放/恢复上下文的场景。
 
 - **下次会话生效**：仅记录意图，当前会话全程工具集不变 → **零缓存失效、零额外费用**。直到以下边界之一到来才真正应用：
-  - 新会话首次请求前（`agent/session-start` 阶段）；
-  - DSH 重启（启动早期 `syncPresetFiles` 物化到预设组合文件）。
+  - 新会话首次请求前（等待 `agent/created` 完成）；
+  - DSH 重启（Host loader 就绪后恢复声明式预设状态）。
 
   面板提供 **「立即应用待生效变更」** 按钮，作为"已知晓费用"的强制生效出口——点击后立即生效（等同于选择"立即生效"并应用）。
 
@@ -114,15 +116,24 @@ flowchart TD
 
 ## 📦 安装
 
+v0.7.0 面向 DeepSeek Harness 0.2.0-rc.2，通过新的 GitHub tag 安装：
+
 ```sh
-dsh plugin --profile web add "github:lilyblessing/dsh-mcp-skill-panel#main"
+dsh plugin --profile web add github:ptyll/dsh-mcp-skill-panel#v0.7.0
 ```
 
-产物已入库（`lib/`），git 源一行安装，无需构建授权。安装后**重启 `dsh web`**（bundle 层在启动时合成，热更新无效），设置页即出现「MCP 与技能管理面板」入口。
+也可从 [v0.7.0 release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.7.0) 下载 tarball，或从本 checkout 构建后安装。本 fork 版本仅发布到 GitHub，不发布到 npm。
 
-> 📦 已发布到 **npm**：`dsh-mcp-skill-panel`（[npm 页面](https://www.npmjs.com/package/dsh-mcp-skill-panel)）。npm 版为预构建产物，安装可跳过 `allowBuilds` 构建授权，也可直接以包名安装；git 源方式始终可用。
->
-> ⬆️ **升级**：git 源用户请在 DSH profile 目录执行 `pnpm update dsh-mcp-skill-panel`（`pnpm add` 对相同 spec 不会重解析 git 分支）；npm 用户 `pnpm add dsh-mcp-skill-panel@latest`（当前 latest = **0.5.4**）即可。
+```sh
+npm ci --ignore-scripts
+npm run typecheck && npm run build && npm run verify && npm test
+npm pack
+dsh plugin --profile web add ./dsh-mcp-skill-panel-0.7.0.tgz
+```
+
+Desktop 用户使用 `--profile desktop`，安装前完全退出 Desktop。安装后**重启 Harness**，设置页即出现「MCP 与技能管理面板」入口。`lib/` 预构建产物仍随包提供。
+
+> 此兼容升级不能通过重新安装旧 tag 或旧 npm 版本获得。旧文件路径下的 MCP 意图保留，但新声明式预设需重新设置这些开关；其它面板配置和工具禁用表继续使用原状态文件。
 
 ## 🚀 使用
 
@@ -242,16 +253,17 @@ sequenceDiagram
 依赖已**自包含**（`@deepseek-ai/*` 构建期依赖全部并入 devDependencies，纯 registry 安装即可，**无需本机 DSH 闭包**）：
 
 ```sh
-npm install --legacy-peer-deps --ignore-scripts   # 一次即可（旧流程的 npm run setup / junction 不再必需）
+npm ci --ignore-scripts   # 安装锁定依赖和集成测试所需 peer 闭包
 npm run typecheck  # tsc 类型检查（@deepseek-ai devDeps 提供 Context 服务类型增补）
 npm run build      # tsdown（node external 全部 @deepseek-ai/*）→ 最后 tsc 生成 lib/types（顺序不可换）
 npm run verify     # 产物验证（无 TOOL_RUNTIME_SCHEDULER 内联、client 包装完整、lib/types 齐全）
 node scripts/selftest-mcp.mjs  # catalog / convert / preset 纯逻辑单测（含 computeStatus 等回归）
 node scripts/selftest-pending.mjs  # P1 会话边界应用链单测
+node scripts/selftest-harness.mjs  # DSH 0.2.0-rc.2 真实服务集成测试
 ```
 
 > **lib/ 产物由 GitHub Actions 自动重建**（`.github/workflows/build.yml`）：提交源码后推送，CI 跑 typecheck→build→verify→selftest，在 main 分支把新 `lib/` 以 `[skip ci]` 提交回写；本地记得 pull 收产物。
-> 为什么 `--legacy-peer-deps`：运行时 peer 由 DSH 闭包注入，而 registry 上 rc.6~rc.8 的 peer 声明互相咬（ERESOLVE）；为什么 `--ignore-scripts`：esbuild 走 optionalDependencies 平台二进制、无需 postinstall。
+> DSH 0.2 peer 图已锁定，开发/CI 不再使用 `--legacy-peer-deps`（集成测试需要真实 peer）；`--ignore-scripts` 避免依赖生命周期脚本，构建平台二进制通过 optionalDependencies 提供。
 
 node 半区 tsdown 必须 `external: [/^@deepseek-ai\//]`：内联 dsh-tools 会产生第二个 `TOOL_RUNTIME_SCHEDULER` Symbol，导致工具调度崩溃（dsh-context-doctor 同款教训）。
 `build.mjs` 的顺序必须是「tsdown → tsc dts」：tsdown 的 `clean` 会清掉 `lib/`，若先 tsc 生成、后 tsdown，`lib/types` 会被连带删除（0.4.7 修复，verify 有护栏）。

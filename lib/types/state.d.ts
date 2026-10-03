@@ -6,6 +6,7 @@ export interface McpRowState {
     lastApplied: boolean | null;
 }
 export type StateFile = {
+    /** File-backed legacy/Host rows or declarative preset:<id> → relative row id. */
     mcp?: Record<string, Record<string, McpRowState>>;
     /** 项目级 MCP 启停意图（工作空间 → serverName → 是否停用）；重启后由 syncRows 应用。 */
     projectMcp?: Record<string, Record<string, boolean>>;

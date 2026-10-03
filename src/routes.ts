@@ -12,7 +12,7 @@ import { homedir } from 'node:os'
 import { readState, writeState, stateApplyMode, stateAutoManageByRoute, stateMiddleLayerHides, stateToolBudget, type ApplyMode } from './state'
 import { setSkillFlag, rowDisabledState, isValidSkillName, buildSkillMd } from './preset'
 import { pendingMcp, applyPendingMcp } from './pending'
-import { findPresetRowByEntryId } from './preset-mcp'
+import { presetLocation, resolvePanelEntry } from './preset-mcp'
 import { resolveAgent, resolveCollectScopeKey, scopeKeySource, getSchemasView, mergeSchemas, collectMcp, collectSkills, confirmedSkills, pruneExpired, DOMAIN_TTL_MS, SKILL_TOGGLE_POLL_MS, type DomainCaches, type Deps } from './collect'
 import { isMcpEntry, serverNameOf } from './mcp-entry'
 import { parseMcpServersJson, serversToPatchYaml, serversToRows, type McpServers, type McpRowConfig } from './mcp-convert'
@@ -139,51 +139,9 @@ async function toggleMcp(deps: Deps, entryId: string, disabled: boolean, applyMo
   const mode = applyMode ?? stateApplyMode(await readState())
   let entry: Awaited<ReturnType<Context['loader']['resolve']>> | undefined
   try {
-    entry = ctx.loader.resolve(entryId)
+    entry = resolvePanelEntry(ctx, entryId)
   } catch {
     entry = undefined
-  }
-  // rc.1 standing 组合兜底：preset 行不在 loader.entries/resolve 里（resolve 抛
-  // "cannot resolve entry"）。行以 source:'preset' 进面板，开关走 state.json
-  // desired 意图（恒 pending），由 syncPresetFiles/applyStateResidue 物化/补齐。
-  if (!entry) {
-    const found = await findPresetRowByEntryId(ctx, entryId)
-    if (found) {
-      const state = await readState()
-      state.mcp ??= {}
-      state.mcp[found.presetPath] ??= {}
-      // lastApplied 与 live 路径一致取文件实际状态（preset.ts:rowDisabledState），
-      // 读不到文件才回落 inventory 值（防 standing/文件漂移误判外部修改）。
-      let fileState: boolean | null = found.row.disabled
-      try {
-        const { rowDisabledState } = await import('./preset')
-        fileState = rowDisabledState(await readFile(found.presetPath, 'utf8'), found.row.rowId)
-      } catch {
-        fileState = found.row.disabled
-      }
-      state.mcp[found.presetPath][found.row.rowId] = { desired: disabled, lastApplied: fileState }
-      await writeState(state)
-      // 内存队列同样记录（pending 徽标 + 下次边界 applyPendingMcp 尝试 entry.update，
-      // 行仍不可 resolve 时保留队列，见 pending.ts:50-53 行失效语义——此处反向：
-      // 找不到才保留意图；若将来行回到 loader，边界可正常应用）。
-      pendingMcp.set(entryId, { entryId, file: found.presetPath, rowId: found.row.rowId, disabled })
-      if (!disabled && deps.controller) {
-        deps.controller.markUserEnabled(found.row.serverName)
-      }
-      return {
-        entryId,
-        rowId: found.row.rowId,
-        serverName: found.row.serverName,
-        disabled,
-        desired: disabled,
-        running: found.row.running,
-        persisted: true,
-        file: found.presetPath,
-        applied: false,
-        pending: true,
-        source: 'preset' as const,
-      }
-    }
   }
   if (!entry) {
     throw new Error(`entry "${entryId}" is not an MCP row`)
@@ -192,7 +150,8 @@ async function toggleMcp(deps: Deps, entryId: string, disabled: boolean, applyMo
   if (!isMcpEntry(entry)) {
     throw new Error(`entry "${entryId}" is not an MCP row`)
   }
-  const rowId = entry.options.id
+  const location = presetLocation(ctx, entry)
+  const rowId = location?.rowId ?? entry.options.id
   const serverName = serverNameOf(entry)
   // 项目级 MCP 行（projmcp-*，来自 .dsh/mcps 扫描）：启停意图持久化到
   // state.json 的 projectMcp 段（重启/热更新由 syncRows 应用），不写 preset 文件
@@ -200,7 +159,7 @@ async function toggleMcp(deps: Deps, entryId: string, disabled: boolean, applyMo
   const projectWorkspace = projectServerOwner(serverName)
   if (projectWorkspace !== undefined) {
     if (!disabled && deps.controller) {
-      deps.controller.markUserEnabled(serverName)
+      deps.controller.markUserEnabled(serverName, entry)
     }
     const state = await readState()
     state.projectMcp ??= {}
@@ -227,7 +186,7 @@ async function toggleMcp(deps: Deps, entryId: string, disabled: boolean, applyMo
   // syncPresetFiles 物化预设。immediate（默认）保持原行为：下轮即生效（会 miss）。
   const deferred = mode === 'next-session'
   if (deferred) {
-    pendingMcp.set(entryId, { entryId, file: (entry.parent?.tree as { filename?: string } | undefined)?.filename ?? null, rowId, disabled })
+    pendingMcp.set(entryId, { entryId, file: location?.file ?? (entry.parent?.tree as { filename?: string } | undefined)?.filename ?? null, rowId, disabled })
   } else {
     pendingMcp.delete(entryId)
     await entry.update({ disabled })
@@ -235,15 +194,15 @@ async function toggleMcp(deps: Deps, entryId: string, disabled: boolean, applyMo
     // state.json ai owner）—— 转为「用户打开」语义：模型立即可见、回收器不再回收。
     // 用户手动关闭（disabled）：AI 标记保持原样（若原本 AI 启用中，回收器/失败恢复照常管理）。
     if (!disabled && deps.controller) {
-      deps.controller.markUserEnabled(serverNameOf(entry))
+      deps.controller.markUserEnabled(serverNameOf(entry), entry)
     }
   }
   // 持久化：v0.1.1 起运行期绝不写预设文件（触发 dsh-agent-presets stamp 重挂事故）。
   // 只把意图写入插件状态文件，由下次启动的 syncPresetFiles() 物化到预设文件。
   const tree = entry.parent?.tree as { filename?: string } | undefined
-  const file = tree?.filename
+  const file = location?.file ?? tree?.filename
   let fileState: boolean | null = null
-  if (typeof file === 'string' && file.length > 0) {
+  if (!location && typeof file === 'string' && file.length > 0) {
     try {
       fileState = rowDisabledState(await readFile(file, 'utf8'), rowId)
     } catch {
@@ -275,8 +234,9 @@ async function toggleMcp(deps: Deps, entryId: string, disabled: boolean, applyMo
 async function toggleSkill(deps: Deps, skillName: string, disabled: boolean, sessionId: string | undefined) {
   const { ctx } = deps
   const agent = resolveAgent(ctx, sessionId)
+  const scope = await resolveCollectScopeKey(ctx, sessionId)
   const cwd = agent?.session?.header?.cwd
-  const def = await ctx.skills.get(skillName, { scope: agent, cwd })
+  const def = await ctx.skills.get(skillName, { scope, cwd })
   if (!def?.path) {
     throw new Error(`skill "${skillName}" has no file path (${def?.source ?? 'unknown source'})`)
   }
@@ -289,7 +249,7 @@ async function toggleSkill(deps: Deps, skillName: string, disabled: boolean, ses
   let confirmed = false
   let wait = SKILL_TOGGLE_POLL_MS
   while (Date.now() < deadline) {
-    const after = await ctx.skills.get(skillName, { scope: agent, cwd })
+    const after = await ctx.skills.get(skillName, { scope, cwd })
     if (after && after.invocation?.modelInvocable === !disabled) {
       confirmed = true
       break
@@ -649,12 +609,13 @@ export function makeRoutes(
         // （~200ms 稳定窗口），立即 snapshot 仍是旧目录；轮询到技能可被发现再返回，
         // 保证弹窗关闭后面板第一次刷新就能看到新技能。
         const agent = resolveAgent(ctx, undefined)
+        const scope = await resolveCollectScopeKey(ctx, undefined)
         const cwd = agent?.session?.header?.cwd
         const deadline = Date.now() + SKILL_TOGGLE_CONFIRM_MS
         let confirmed = false
         let wait = SKILL_TOGGLE_POLL_MS
         while (Date.now() < deadline) {
-          const def = await ctx.skills.get(parsed.name, { scope: agent, cwd }).catch(() => undefined)
+          const def = await ctx.skills.get(parsed.name, { scope, cwd }).catch(() => undefined)
           if (def) {
             confirmed = true
             break

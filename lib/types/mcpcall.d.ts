@@ -56,17 +56,11 @@ export interface McpControlCtx {
     /** 把内存 catalog 持久化到 catalog.json。 */
     persistCatalog(): Promise<void>;
     /** 按 serverName 反查 loader entry；无则 undefined。 */
-    resolveEntry(serverName: string): Entry | undefined;
+    resolveEntry(serverName: string, agent?: Agent): Entry | undefined;
+    /** Persisted diagnostic owner identity; preset handles include the revision. */
+    entryKey?(entry: Entry): string;
     /** server 自己的注册/调用超时（读 entry config 的 toolCallTimeoutMs，缺省回退）。 */
     serverTimeoutMs(serverName: string): number;
-    /**
-     * rc.1 standing 组合兜底超时（窄场景）：loader 有行但缺 toolCallTimeoutMs 时，
-     * 从 preset 快照补读。loader 无行（mcp_call 预设行）仍走「不在 loader 中」返回，
-     * 预设行直通调用是后续修复，本 PR 定为仅面板修复（见 toggleMcp 预设分支注释）。
-     * 返回 undefined = preset 也无该 server，调用方回退默认超时。
-     * 调用方应做 TTL 缓存（inventory+resolve+read 较重），见 index.ts 闭包。
-     */
-    presetTimeoutMs?(serverName: string): Promise<number | undefined>;
     /** AI-owner 标记：上次自动开启该 entry 的时间戳。 */
     setAiOwner(entryId: string, at: number): Promise<void>;
     clearAiOwner(entryId: string): Promise<void>;
@@ -77,12 +71,12 @@ export interface McpCallController {
     /** 保活启用：disabled 时开启并记录 AI owner。返回本次是否由 AI 开启。 */
     ensureEnabled(serverName: string): Promise<boolean>;
     /** 该 server 当前是否由 AI 临时启用（mcp_call 保活中）——装配过滤据此保持其不可见。 */
-    isAiEnabled(serverName: string): boolean;
+    isAiEnabled(serverName: string, agent?: Agent): boolean;
     /**
      * 用户手动打开该 server：清除 AI 临时启用标记（aiEnabled/引用计数/lastUsed +
      * state.json 的 ai owner），使其转为「用户打开」语义 —— 模型立即可见、回收器不再回收。
      */
-    markUserEnabled(serverName: string): void;
+    markUserEnabled(serverName: string, entry?: Entry): void;
     /** 完整调用流程，返回给模型的文本结果（不会 throw，错误也转文本）。 */
     call(serverName: string, toolName: string, args: unknown, agent: Agent | undefined, signal: AbortSignal, explicitTimeoutMs?: number): Promise<string>;
     /** 启动空闲回收器；返回 disposer。 */

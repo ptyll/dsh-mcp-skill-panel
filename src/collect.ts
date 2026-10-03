@@ -16,8 +16,7 @@ import type { McpCallController } from './mcpcall'
 import type { CatalogRuntime } from './index'
 import { messageOf } from './util'
 import { readState, stateToolBudget, stateMiddleLayerHides } from './state'
-import { pendingMcp } from './pending'
-import { listPresetMcpRows } from './preset-mcp'
+import { panelEntries, presetLocation, selectedPresetMount } from './preset-mcp'
 
 /** 分域缓存 TTL：事件驱动失效为主，TTL 只是兜底（事件丢失场景） */
 export const DOMAIN_TTL_MS = 60_000
@@ -135,28 +134,18 @@ export function resolveAgent(ctx: Context, sessionId: string | undefined) {
   return ctx.agents.list()[0]
 }
 
-/**
- * 进程级共享的 scope key（standing 层）。
- *
- * 关键坑（2026-08-27 实测）：HTTP 请求路径（routes 的 httpCtx）下既解析不到
- * agent（roots/list 空或非目标）也拿不到 agentPresets.standingKeyFor()（该服务
- * 视图受限）→ scope key 恒 undefined → schemas 落入空视图，面板聚合全 0
- * （filesystem 等「无工具」）。而 apply 早期 ctx 下 standingKeyFor() 可解析
- * （快照路径一直正常，lastMcpTools=17）。
- * 解法：scope key 在 apply 早期解析一次并缓存（进程级单例），所有路径复用。
+/** Resolve on each read: sessions and retained preset revisions have distinct scopes.
+ * Before any Agent exists, use the default definition's already mounted scope.
  */
-let sharedScopeKey: object | undefined
 /** scope key 解析来源（NIT-1：scopeDiag 现场取证用）：'agent' | 'standing' | null。 */
 let sharedScopeKeySource: 'agent' | 'standing' | null = null
 
 export async function resolveCollectScopeKey(ctx: Context, sessionId: string | undefined): Promise<object | undefined> {
-  if (sharedScopeKey !== undefined) return sharedScopeKey
   try {
     const agent = resolveAgent(ctx, sessionId)
     if (agent) {
       const key = scopeOf(agent.ctx)
       if (key !== undefined) {
-        sharedScopeKey = key
         sharedScopeKeySource = 'agent'
         return key
       }
@@ -165,16 +154,16 @@ export async function resolveCollectScopeKey(ctx: Context, sessionId: string | u
     /* fall through */
   }
   try {
-    const key = await ctx.agentPresets.standingKeyFor()
+    const key = selectedPresetMount(ctx)?.key
     if (key !== undefined) {
-      sharedScopeKey = key as object
       sharedScopeKeySource = 'standing'
       return key as object
     }
   } catch {
     /* ignore */
   }
-  return sharedScopeKey
+  sharedScopeKeySource = null
+  return undefined
 }
 
 /** scope key 解析来源（/debug scopeDiag 展示用）。 */
@@ -201,7 +190,7 @@ function baseView(
 ): Pick<McpView, 'sessionId' | 'preset' | 'cwd'> {
   let preset: string | null = null
   try {
-    if (agent) preset = ctx.agentPresets.composedPreset(agent.ctx) ?? null
+    preset = agent ? ctx.agentPresets.composedPreset(agent.ctx) ?? null : ctx.agentPresets.defaultId
   } catch {
     preset = null
   }
@@ -365,7 +354,7 @@ async function collectMcp(deps: Deps, sessionId: string | undefined): Promise<Mc
   // 驱动 UI「待生效」徽标）。readState 有内存缓存，成本忽略。
   const state = await readState().catch(() => undefined)
   try {
-    for (const entry of ctx.loader.entries()) {
+    for (const entry of panelEntries(ctx, agent)) {
       if (!isMcpEntry(entry)) continue
       const serverName = serverNameOf(entry)
       // 项目级 MCP：面板始终展示（可开关、标注工作区）；模型可见性由
@@ -377,9 +366,10 @@ async function collectMcp(deps: Deps, sessionId: string | undefined): Promise<Mc
       const disabled = entry.disabled
       // P1 会话边界：该行在预设文件下的 desired 意图与待生效判定（desired !== live disabled）。
       const tree = entry.parent?.tree as { filename?: string } | undefined
-      const rowFile = tree?.filename
+      const location = presetLocation(ctx, entry)
+      const rowFile = location?.file ?? tree?.filename
       const rowDesired =
-        typeof rowFile === 'string' && rowFile.length > 0 ? state?.mcp?.[rowFile]?.[entry.options.id]?.desired : undefined
+        typeof rowFile === 'string' && rowFile.length > 0 ? state?.mcp?.[rowFile]?.[location?.rowId ?? entry.options.id]?.desired : undefined
       // 面板联动（P3）：停用/未挂载时优先显示 catalog 目录值（工具数与 token 估算），
       // 让用户看到「该 MCP 有哪些工具可用」而不只是 0
       const catalogInfo = deps.catalogRuntime.catalog[serverName]
@@ -403,8 +393,8 @@ async function collectMcp(deps: Deps, sessionId: string | undefined): Promise<Mc
       }
       const effective = effectiveOf(toolList, toolDisabled, displayTools, displayTokens)
       mcp.push({
-        entryId: entry.id,
-        rowId: entry.options.id,
+        entryId: location?.entryId ?? entry.id,
+        rowId: location?.rowId ?? entry.options.id,
         serverName,
         transport: transportRaw ? String(transportRaw) : null,
         disabled,
@@ -417,11 +407,11 @@ async function collectMcp(deps: Deps, sessionId: string | undefined): Promise<Mc
         status,
         modelVisible:
           !disabled &&
-          !(deps.catalogRuntime.autoManage && (deps.controller?.isAiEnabled(serverName) ?? false)),
+          !(deps.catalogRuntime.autoManage && (deps.controller?.isAiEnabled(serverName, agent) ?? false)),
         desired: rowDesired,
         pending: rowDesired !== undefined ? rowDesired !== disabled : false,
         workspace: projectWorkspace,
-        source: 'live',
+        source: location ? 'preset' : 'live',
       })
     }
   } catch (error) {
@@ -429,69 +419,6 @@ async function collectMcp(deps: Deps, sessionId: string | undefined): Promise<Mc
   }
   mcp.sort((a, b) => a.serverName.localeCompare(b.serverName))
 
-  // rc.1 standing 组合兜底（空面板修复A，2026-09-08）：preset 行挂 standing 组合，
-  // 不在 ctx.loader.entries() 里时 mcp[] 为空。此时以当前会话 preset 的 standing
-  // 快照行补行：开关走 state.json desired 意图（pending 徽标），pending.ts:state.json
-  // 残留补齐负责下次启动/会话边界物化（syncPresetFiles 写 preset 文件）。
-  // 仅当「loader 零行」时补行——loader 有行（旧版/未来版）时保持原行为不动。
-  if (mcp.length === 0) {
-    try {
-      // 当前会话 preset：缺 sessionId 时 roots[0]/list[0]（与 resolveAgent 同规则）
-      const presetId = agent ? (ctx.agentPresets.composedPreset(agent.ctx) ?? null) : null
-      if (presetId) {
-        const { rows: presetRows } = await listPresetMcpRows(ctx, presetId)
-        for (const pr of presetRows) {
-          const projectWorkspace = projectServerOwner(pr.serverName)
-          const agg = byServer.get(pr.serverName)
-          const liveTools = agg?.tools ?? 0
-          const rowDesired = state?.mcp?.[pr.file]?.[pr.rowId]?.desired
-          const pendingHit = pendingMcp.get(pr.entryId)
-          // 从未操作过的预设行：无 pending、无 desired → pending=false（首屏不挂徽标）；
-          // toggle 后（pendingHit 或 desired≠live）才挂 pending。
-          const pendingFlag = pendingHit ? pendingHit.disabled !== pr.disabled : rowDesired !== undefined ? rowDesired !== pr.disabled : false
-          const catalogInfo = deps.catalogRuntime.catalog[pr.serverName]
-          const displayTools = liveTools > 0 ? liveTools : catalogInfo?.tools.length ?? 0
-          const displayTokens =
-            liveTools > 0 ? (agg?.tokens ?? 0) : catalogTokens(deps.catalogRuntime, pr.serverName, catalogInfo)
-          const status = computeStatus(pr.disabled, pr.running, liveTools)
-          const toolDisabled = disabledToolsOf(pr.serverName, projectWorkspace)
-          let toolList = toolsByServer.get(pr.serverName)
-          if (!toolList && catalogInfo) {
-            toolList = catalogInfo.tools.map((tool) => ({
-              name: String(tool.name ?? ''),
-              description: String(tool.description ?? ''),
-              tokens: tokenEstimate(tool.parameters),
-            }))
-          }
-          const effective = effectiveOf(toolList, toolDisabled, displayTools, displayTokens)
-          mcp.push({
-            entryId: pr.entryId,
-            rowId: pr.rowId,
-            serverName: pr.serverName,
-            transport: pr.transport,
-            disabled: pr.disabled,
-            running: pr.running,
-            tools: displayTools,
-            tokens: displayTokens,
-            toolsEnabled: effective.toolsEnabled,
-            tokensEnabled: effective.tokensEnabled,
-            toolList: toolList?.map((tool) => ({ name: tool.name, description: tool.description, disabled: toolDisabled.has(tool.name) })) ?? null,
-            status,
-            modelVisible:
-              !pr.disabled &&
-              !(deps.catalogRuntime.autoManage && (deps.controller?.isAiEnabled(pr.serverName) ?? false)),
-            desired: rowDesired,
-            pending: pendingFlag,
-            workspace: projectWorkspace,
-            source: 'preset',
-          })
-        }
-        mcp.sort((a, b) => a.serverName.localeCompare(b.serverName))
-      }
-    } catch (error) {
-      errors.push(`preset-mcp: ${messageOf(error)}`)
-    }
-  }
 
   return {
     ...baseView(ctx, agent, cwd),
@@ -528,13 +455,14 @@ async function collectSkills(deps: Deps, sessionId: string | undefined): Promise
   const { ctx } = deps
   const errors: string[] = []
   const agent = resolveAgent(ctx, sessionId)
+  const scope = await resolveCollectScopeKey(ctx, sessionId)
   const cwd = agent?.session?.header?.cwd ?? undefined
 
   // Skills
   const skills: SkillView[] = []
   let skillsModelVisible = 0
   try {
-    const snapshot = await ctx.skills.snapshot({ scope: agent, cwd })
+    const snapshot = await ctx.skills.snapshot({ scope, cwd })
     for (const summary of snapshot.skills) {
       // toggle 确认值覆盖：snapshot 的 candidate 缓存可能落后于 watcher 失效
       // （skills.get 实时读文件已确认新值，snapshot 的发现缓存要等 watcher 200ms 生效）。

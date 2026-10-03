@@ -52,7 +52,7 @@ export interface AssemblyGate {
 
 export function installMcpVisibilityFilter(
   ctx: Context,
-  buildVisibility: () => ReadonlyMap<string, boolean>,
+  buildVisibility: (agent?: Agent) => ReadonlyMap<string, boolean>,
   gateFor: (agent: Agent | undefined) => AssemblyGate,
 ): () => void {
   return ctx.effect(() => {
@@ -68,7 +68,7 @@ export function installMcpVisibilityFilter(
           // 本次装配的模型是否使用中间层（控制工具投放与否 + 隐藏范围）
           const gate = gateFor(agent)
           // 每回合一次 loader 遍历构建可见性表，工具过滤全部 O(1) 查表
-          const visibility = buildVisibility()
+          const visibility = buildVisibility(agent)
           assembly.tools = assembly.tools.filter((tool) => {
             const name = String(tool.name ?? '')
             // 控制工具：只投放给 gate 打开的模型

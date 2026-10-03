@@ -35,4 +35,4 @@ export interface AssemblyGate {
     on: boolean;
     hideAll: boolean;
 }
-export declare function installMcpVisibilityFilter(ctx: Context, buildVisibility: () => ReadonlyMap<string, boolean>, gateFor: (agent: Agent | undefined) => AssemblyGate): () => void;
+export declare function installMcpVisibilityFilter(ctx: Context, buildVisibility: (agent?: Agent) => ReadonlyMap<string, boolean>, gateFor: (agent: Agent | undefined) => AssemblyGate): () => void;

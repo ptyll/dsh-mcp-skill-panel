@@ -17,6 +17,8 @@ import type { McpCallController } from './mcpcall'
 import { rowDisabledState } from './preset'
 import { readState, writeState, type StateFile } from './state'
 import { messageOf } from './util'
+import { resolvePanelEntry, presetStateKey, presetLocation } from './preset-mcp'
+import { livePresetMounts } from '@deepseek-ai/dsh-agent-preset-registry'
 
 /** 单个待生效项（key = entryId）。 */
 export interface PendingMcpEntry {
@@ -46,14 +48,15 @@ export async function applyPendingMcp(deps: PendingDeps): Promise<number> {
   for (const [entryId, pending] of [...pendingMcp.entries()]) {
     try {
       // loader.resolve 需要完整嵌套 id；行不存在/非 MCP 行时视为已失效，直接清队列
-      const entry = ctx.loader.resolve(entryId) as Entry
+      const entry = resolvePanelEntry(ctx, entryId)
+      if (!entry) throw new Error(`cannot resolve MCP entry ${entryId}`)
       if (!isMcpEntry(entry)) {
         pendingMcp.delete(entryId)
         continue
       }
       await entry.update({ disabled: pending.disabled })
       if (!pending.disabled && deps.controller) {
-        deps.controller.markUserEnabled(serverNameOf(entry))
+        deps.controller.markUserEnabled(serverNameOf(entry), entry)
       }
       pendingMcp.delete(entryId)
       applied += 1
@@ -81,6 +84,26 @@ async function applyStateResidue(deps: PendingDeps, state: StateFile | undefined
   const mcp = state?.mcp
   if (!mcp || Object.keys(mcp).length === 0) return 0
   let applied = 0
+  // Declarative presets have no backing file. Restore intent directly on every
+  // retained revision, including the current definition before any Agent exists.
+  for (const mount of livePresetMounts(ctx.root.fiber)) {
+    const rows = mcp[presetStateKey(mount.presetId)]
+    if (!rows) continue
+    const owner = mount.tree.ctx.fiber.entry
+    const prefix = owner ? `${owner.id}:` : ''
+    for (const entry of mount.tree.entries()) {
+      if (!isMcpEntry(entry) || pendingMcp.has(presetLocation(ctx, entry)?.entryId ?? entry.id)) continue
+      const desired = rows[entry.id.slice(prefix.length)]?.desired
+      if (typeof desired !== 'boolean' || desired === entry.disabled) continue
+      try {
+        await entry.update({ disabled: desired })
+        if (!desired) deps.controller?.markUserEnabled(serverNameOf(entry), entry)
+        applied += 1
+      } catch (error) {
+        ctx.logger.warn?.(`mcp-skill-panel: preset state restore failed: ${messageOf(error)}`)
+      }
+    }
+  }
   let residueCleared = false
   // 按 file 分组：同一文件只读盘一次
   const byFile = new Map<string, { entry: Entry; rowState: NonNullable<NonNullable<StateFile['mcp']>[string]>[string] }[]>()
@@ -120,7 +143,7 @@ async function applyStateResidue(deps: PendingDeps, state: StateFile | undefined
       try {
         await entry.update({ disabled: rowState.desired })
         if (!rowState.desired && deps.controller) {
-          deps.controller.markUserEnabled(serverNameOf(entry))
+          deps.controller.markUserEnabled(serverNameOf(entry), entry)
         }
         applied += 1
         ctx.logger.info?.(`mcp-skill-panel: applied state-residue toggle ${entry.id} → disabled=${rowState.desired}`)

@@ -339,10 +339,10 @@ export function installProjectMcp(ctx: Context): () => void {
   const disposers: Array<() => void> = []
   disposers.push(
     ctx.effect(() => {
-      const off = ctx.root.on('agent/session-start', (payload: { agent?: { session?: { header?: { cwd?: unknown } } } }) => {
+      const off = ctx.root.on('agent/created', async (payload: { agent?: { session?: { header?: { cwd?: unknown } } } }) => {
         const cwd = payload?.agent?.session?.header?.cwd
         if (typeof cwd !== 'string' || cwd.length === 0) return
-        void ensureWorkspace(ctx, cwd).catch((error) => {
+        await ensureWorkspace(ctx, cwd).catch((error) => {
           ctx.logger.warn?.(`mcp-skill-panel: 项目 MCP 挂载失败（${cwd}）: ${messageOf(error)}`)
         })
       })

@@ -1,5 +1,7 @@
 # GitHub Actions 构建方案（v0.4.8）
 
+> **v0.7.0 更新**：当前开发/CI 使用 `npm ci --ignore-scripts`，DSH 包 pin 到 `0.2.0-rc.2`，`dsh-agent-presets` 替换为 `dsh-agent-preset-registry`；新增真实服务集成测试 `scripts/selftest-harness.mjs`。下文是 v0.4.8 的历史记录，旧 `--legacy-peer-deps` 参数不适用于当前集成测试。详见 [升级说明](upgrade-harness-0.2.md)。
+
 > 目的：把「本机构建（npm env 坑 / 沙箱 spawn 限制 / 需本地 DSH 闭包）」替换为 CI 自动构建 +
 > 产物自动回写。本文件记录方案、关键参数、证明过程与注意事项。
 

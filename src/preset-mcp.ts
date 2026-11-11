@@ -6,16 +6,17 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader'
-import { livePresetMounts, standingMountFor, type PresetMount } from '@deepseek-ai/dsh-agent-preset-registry'
+import type { PresetMount } from '@deepseek-ai/dsh-agent-preset-registry'
+import { livePresetMounts, standingMountFor } from './preset-runtime'
 import { isMcpEntry, serverNameOf, mcpEntryConfig } from './mcp-entry'
 
 /** A preset's state key is an identity, never a filesystem path in DSH 0.2. */
 export const presetStateKey = (presetId: string): string => `preset:${presetId}`
 
 export function selectedPresetMount(ctx: Context, agent?: Agent): PresetMount | undefined {
-  if (agent) return standingMountFor(agent.ctx)
+  if (agent) return standingMountFor(ctx, agent.ctx)
   const id = ctx.agentPresets.defaultId
-  return livePresetMounts(ctx.root.fiber).reverse().find((mount) => mount.presetId === id)
+  return livePresetMounts(ctx).reverse().find((mount) => mount.presetId === id)
 }
 
 /** Host entries and the selected revision; different presets may reuse server names. */
@@ -29,7 +30,7 @@ export function panelEntries(ctx: Context, agent?: Agent): Entry[] {
 /** Exact live handles are required: registry inventory ids are relative to its tree. */
 export function resolvePanelEntry(ctx: Context, entryId: string): Entry | undefined {
   try { return ctx.loader.resolve(entryId) } catch { /* preset tree */ }
-  for (const mount of livePresetMounts(ctx.root.fiber).reverse()) {
+  for (const mount of livePresetMounts(ctx).reverse()) {
     const entry = [...mount.tree.entries()].find((candidate) => presetLocation(ctx, candidate)?.entryId === entryId)
     if (entry) return entry
   }
@@ -37,7 +38,7 @@ export function resolvePanelEntry(ctx: Context, entryId: string): Entry | undefi
 }
 
 export function presetLocation(ctx: Context, entry: Entry): { file: string; rowId: string; entryId: string } | undefined {
-  for (const mount of livePresetMounts(ctx.root.fiber)) {
+  for (const mount of livePresetMounts(ctx)) {
     if (![...mount.tree.entries()].includes(entry)) continue
     const owner = mount.tree.ctx.fiber.entry
     const prefix = owner ? `${owner.id}:` : ''
@@ -113,7 +114,7 @@ export async function listPresetMcpRows(
   ctx: Context,
   presetId: string,
 ): Promise<{ rows: PresetMcpRow[]; presetPath: string }> {
-  const mount = livePresetMounts(ctx.root.fiber).reverse().find((candidate) => candidate.presetId === presetId)
+  const mount = livePresetMounts(ctx).reverse().find((candidate) => candidate.presetId === presetId)
   if (!mount) return { rows: [], presetPath: presetStateKey(presetId) }
   const presetPath = presetStateKey(presetId)
   const rows: PresetMcpRow[] = []
@@ -143,7 +144,7 @@ export async function findPresetRowByEntryId(
   ctx: Context,
   entryId: string,
 ): Promise<{ presetId: string; row: PresetMcpRow; presetPath: string } | undefined> {
-  for (const mount of livePresetMounts(ctx.root.fiber).reverse()) {
+  for (const mount of livePresetMounts(ctx).reverse()) {
     const { rows, presetPath } = await listPresetMcpRows(ctx, mount.presetId)
     const row = rows.find((candidate) => candidate.entryId === entryId)
     if (row) return { presetId: mount.presetId, row, presetPath }

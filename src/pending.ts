@@ -18,7 +18,7 @@ import { rowDisabledState } from './preset'
 import { readState, writeState, type StateFile } from './state'
 import { messageOf } from './util'
 import { resolvePanelEntry, presetStateKey, presetLocation } from './preset-mcp'
-import { livePresetMounts } from '@deepseek-ai/dsh-agent-preset-registry'
+import { livePresetMounts } from './preset-runtime'
 
 /** 单个待生效项（key = entryId）。 */
 export interface PendingMcpEntry {
@@ -86,7 +86,7 @@ async function applyStateResidue(deps: PendingDeps, state: StateFile | undefined
   let applied = 0
   // Declarative presets have no backing file. Restore intent directly on every
   // retained revision, including the current definition before any Agent exists.
-  for (const mount of livePresetMounts(ctx.root.fiber)) {
+  for (const mount of livePresetMounts(ctx)) {
     const rows = mcp[presetStateKey(mount.presetId)]
     if (!rows) continue
     const owner = mount.tree.ctx.fiber.entry

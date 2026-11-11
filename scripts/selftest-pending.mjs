@@ -66,6 +66,7 @@ const makeHarness = async ({ rows }) => {
   }))
   const ctx = {
     root: { fiber: {} },
+    agentPresets: { generations: new Map() },
     loader: {
       entries: () => entries,
       resolve: (id) => entries.find((e) => e.id === id),

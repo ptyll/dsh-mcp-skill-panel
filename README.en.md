@@ -9,7 +9,7 @@
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.7.0-green.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.8.0-green.svg">
 </p>
 
 ---
@@ -74,24 +74,18 @@ flowchart TD
 
 ## 📦 Install
 
-Version **0.7.0** targets **DeepSeek Harness 0.2.0-rc.2**. The `v0.6.1` Git tag uses the retired preset API; reinstalling that tag does not upgrade its code. Install the new GitHub tag:
+Version **0.8.0** targets exactly **DeepSeek Harness 0.2.2-rc.1**. Package the prebuilt files in this checkout and install the resulting archive:
 
 ```sh
-dsh plugin --profile web add github:ptyll/dsh-mcp-skill-panel#v0.7.0
+npm pack --ignore-scripts
+dsh plugin --profile web add ./dsh-mcp-skill-panel-0.8.0.tgz
 ```
 
-Alternatively, download the archive from the [v0.7.0 release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.7.0), or build it from this checkout:
+For development, run `npm ci --ignore-scripts`, then `npm run typecheck && npm run build && npm run verify && npm test` before packaging.
 
-```sh
-npm ci --ignore-scripts
-npm run typecheck && npm run build && npm run verify && npm test
-npm pack
-dsh plugin --profile web add ./dsh-mcp-skill-panel-0.7.0.tgz
-```
+For Desktop, replace `--profile web` with `--profile desktop` and fully quit Desktop before installing. **Restart Harness** after installation, then open Settings → **MCP & Skill Manager**. [Upgrade details and validation](docs/upgrade-harness-0.2.2.md).
 
-For Desktop, replace `--profile web` with `--profile desktop` and fully quit Desktop before installing. **Restart Harness** after installation, then open Settings → **MCP & Skill Manager**. [Upgrade details and validation](docs/upgrade-harness-0.2.md).
-
-This fork release is published on GitHub, not npm. Use the GitHub tag or release archive for this version.
+This checkout does not publish an npm release or a GitHub tag. Older tags keep their original code.
 
 ## 🚀 Usage
 
@@ -212,6 +206,7 @@ The node-half tsdown build must use `external: [/^@deepseek-ai\//]`: inlining ds
 
 | Version | Content |
 | --- | --- |
+| 0.8.0 | Harness 0.2.2-rc.1: guarded live-preset adapter, batch tool execution, revision isolation tests, updated dependencies and prebuilt files. |
 | 0.7.0 | Harness 0.2.0-rc.2: declarative preset registry, revision-qualified MCP handles, preset identity persistence, awaited agent/created initialization, per-session scope lookup, correct middle-layer calls across presets, and runtime integration tests. |
 | 0.5.0 | Prompt Cache optimization (P0+P1, issue #1): mid-session toggle miss warning banner (red severe variant for large packs, 12s auto-dismiss); apply-timing immediate / next-session (the latter records intent into a pending queue, applied at `agent/session-start` or on restart materialization — zero miss for the current session); toggles coalesced into a single toggleBatch (single invalidateMcp); applyPendingMcp state-residue fallback (rows with desired ≠ live after restart/hot-reload are applied; externally modified rows are respected and cleared) + new selftest-pending chain test (in CI); toggleBatch partial failures no longer abort the batch; updated cover image |
 | 0.4.9 | Dependency alignment to the DSH rc.8 line (full pipeline verified on rc.8): 10 `@deepseek-ai/*` devDeps 0.1.0-rc.6 → 0.1.0-rc.8, peers tightened (cordis ^4.0.1 stable / schemastery ^3.18.1 / dsh-scope ^0.1.0-rc.8); published on npm (first release 0.4.8, `repository` points back here) + new Trusted Publishing pipeline (publish.yml, OIDC, tokenless) |

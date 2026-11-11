@@ -1,11 +1,11 @@
-// Integration with the published DSH 0.2.0-rc.2 services; no model/API key needed.
+// Integration with the published DSH 0.2.2-rc.1 services; no model/API key needed.
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import { join } from 'node:path'
 import { mock } from 'node:test'
 import { syncBuiltinESMExports } from 'node:module'
-import { createServer } from 'node:http'
+import { Readable } from 'node:stream'
 import { runInNewContext } from 'node:vm'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
@@ -14,6 +14,7 @@ import SessionStore from '@deepseek-ai/dsh-session'
 import Projections from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
+import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import Skills from '@deepseek-ai/dsh-skill'
 import Presets from '@deepseek-ai/dsh-agent-preset-registry'
 import { evaluatePluginCompatibility } from '@deepseek-ai/dsh-app-boot'
@@ -24,7 +25,6 @@ mock.method(os, 'homedir', () => temporary)
 syncBuiltinESMExports()
 const panel = await import('../lib/index.js')
 const contexts = []
-const servers = []
 
 async function harness() {
   const ctx = new Context()
@@ -35,6 +35,7 @@ async function harness() {
   await ctx.plugin(Projections)
   await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(Tools)
+  await ctx.plugin(NativeExecutor)
   await ctx.plugin(Skills)
   await ctx.plugin(Presets, { default: 'standard' })
   const agents = new Map()
@@ -59,22 +60,27 @@ async function harness() {
   await ctx.loader.await()
   await ctx.loader.create({ id: 'runtime-inventory', name: new URL('../lib/index.js', import.meta.url).href })
   await ctx.loader.await()
-  const server = createServer((req, res) => {
-    const route = routes.get(new URL(req.url, 'http://localhost').pathname)
-    if (route) route.handler(req, res)
-    else { res.statusCode = 404; res.end() }
-  })
-  servers.push(server)
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  const origin = `http://127.0.0.1:${server.address().port}`
+  // Exercise the real registered HTTP handlers without opening a TCP socket.
   let token
   const request = async (path, body) => {
     if (body && !token) token = (await request('/token')).token
-    const response = await fetch(`${origin}/api/mcp-skill-panel${path}`, body ? {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-panel-token': token }, body: JSON.stringify(body),
-    } : undefined)
-    const result = await response.json()
-    assert.equal(response.status, 200, JSON.stringify(result))
+    const url = `/api/mcp-skill-panel${path}`
+    const route = routes.get(new URL(url, 'http://localhost').pathname)
+    assert.ok(route, `route registered: ${path}`)
+    const req = Readable.from(body ? [JSON.stringify(body)] : [])
+    Object.assign(req, { url, method: body ? 'POST' : 'GET', headers: body ? { 'x-panel-token': token } : {} })
+    let statusCode = 200
+    let finish
+    const finished = new Promise(resolve => { finish = resolve })
+    const res = {
+      get statusCode() { return statusCode },
+      set statusCode(value) { statusCode = value },
+      setHeader() {},
+      end(value) { finish(JSON.parse(value)) },
+    }
+    await route.handler(req, res)
+    const result = await finished
+    assert.equal(statusCode, 200, JSON.stringify(result))
     assert.equal(result.ok, true, JSON.stringify(result))
     return result
   }
@@ -92,9 +98,10 @@ async function harness() {
 
 try {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.0-rc.2'), undefined)
+  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.2-rc.1'), undefined)
   assert.ok(evaluatePluginCompatibility(manifest, {}, '0.1.2-rc.1'))
-  console.log('ok   plugin compatibility policy accepts rc.2 and rejects the retired API')
+  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.2.0-rc.2'))
+  console.log('ok   plugin compatibility policy accepts 0.2.2-rc.1 and rejects older runtimes')
   await panel.writeState({})
   const h = await harness()
   const initial = (await h.request('/state')).state
@@ -103,6 +110,11 @@ try {
   assert.equal(initial.mcp[0].status, 'active')
   assert.deepEqual(initial.errors, [])
   assert.deepEqual(initial.skills.map(row => row.name), ['skill-standard'])
+  // Catalog persistence initializes asynchronously after plugin activation.
+  for (let attempt = 0; !(await h.request('/debug')).diag.loadedAt; attempt++) {
+    assert.ok(attempt < 200, 'catalog initialization completed')
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
   await h.request('/debug/collect', {})
   assert.equal((await h.request('/debug')).catalog.unique.tools, 1, 'catalog includes non-default presets')
   console.log('ok   DSH 0.2 registry: MCP inventory and schemas before any session')
@@ -139,11 +151,14 @@ try {
   await h.request('/config', { applyMode: 'immediate', autoManage: true })
   await h.request('/mcp/toggle', { entryId: a.mcp[0].entryId, disabled: true })
   await h.request('/mcp/toggle', { entryId: b.mcp[0].entryId, disabled: true })
-  const call = agent => h.ctx.tools.execute({
-    callId: `test-${agent.id}`, name: panel.MCP_CALL_TOOL,
-    arguments: { server: 'shared', tool: 'ping', arguments: {} },
-    agent, signal: new AbortController().signal,
-  })
+  const call = async agent => {
+    const batch = await h.ctx.tools.execute({
+      calls: [{ type: 'tool-call', id: `test-${agent.id}`, name: panel.MCP_CALL_TOOL,
+        arguments: JSON.stringify({ server: 'shared', tool: 'ping', arguments: {} }) }],
+      agent, signal: new AbortController().signal,
+    })
+    return batch.results[0].result
+  }
   const calledA = await call(first)
   const calledB = await call(second)
   assert.equal(calledA.isError, false, JSON.stringify(calledA))
@@ -152,6 +167,31 @@ try {
   assert.match(JSON.stringify(calledB.content), /other/)
   assert.equal(Object.keys((await panel.readState()).ai).length, 2, 'AI owners do not collide on relative loader ids')
   console.log('ok   middle-layer calls enable and execute the correct preset when server names overlap')
+
+  // A reloaded declaration must not redirect an existing Agent to a new tree.
+  await h.ctx.loader.resolve('preset-standard').update({ config: {
+    id: 'standard', plugins: [{ id: 'mcp-shared',
+      name: new URL('./fixtures/mcp-server.mjs', import.meta.url).href,
+      config: { serverName: 'shared', preset: 'standard-v2' },
+    }],
+  } })
+  await h.ctx.loader.await()
+  const latest = await h.agent('standard', 'latest')
+  for (const id of [first.id, latest.id]) {
+    const current = await state(id)
+    await h.request('/mcp/toggle', { entryId: current.mcp[0].entryId, disabled: false })
+  }
+  const oldState = await state(first.id)
+  const newState = await state(latest.id)
+  assert.notEqual(oldState.mcp[0].entryId, newState.mcp[0].entryId)
+  assert.deepEqual(oldState.skills.map(row => row.name), ['skill-standard'])
+  assert.deepEqual(newState.skills.map(row => row.name), ['skill-standard-v2'])
+  await h.request('/mcp/toggle', { entryId: oldState.mcp[0].entryId, disabled: true })
+  assert.equal((await state(first.id)).mcp[0].disabled, true)
+  assert.equal((await state(latest.id)).mcp[0].disabled, false)
+  assert.match(JSON.stringify((await call(first)).content), /standard/)
+  assert.match(JSON.stringify((await call(latest)).content), /standard-v2/)
+  console.log('ok   retained and replacement revisions keep distinct handles, scopes and calls')
 
   const fresh = await harness()
   const restored = (await fresh.request('/state')).state
@@ -178,7 +218,6 @@ try {
   console.log('ok   rebuilt browser bundle loads and registers its settings section')
   console.log('\nselftest-harness: all checks passed')
 } finally {
-  for (const server of servers) await new Promise(resolve => server.close(resolve))
   for (const ctx of contexts.reverse()) await ctx.fiber.dispose()
   mock.restoreAll()
   syncBuiltinESMExports()

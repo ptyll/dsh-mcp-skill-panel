@@ -24,7 +24,8 @@ if (existsSync(nodeOut)) {
   check(inline === 0, `no inlined TOOL_RUNTIME_SCHEDULER (found ${inline})`)
   check(/import\s*\{[^}]*scopeOf[^}]*\}\s*from\s*"@deepseek-ai\/dsh-scope"/.test(src), 'external dsh-scope import kept')
   check(/import\s+Schema\s+from\s*"@deepseek-ai\/schemastery"/.test(src), 'external schemastery import kept')
-  check(/from\s*"@deepseek-ai\/dsh-agent-preset-registry"/.test(src), 'preset registry uses the host module instance')
+  check(!/import\s*\{[^}]*\b(?:livePresetMounts|standingMountFor)\b[^}]*\}\s*from\s*["']@deepseek-ai\/dsh-agent-preset-registry["']/.test(src), 'removed preset registry exports are not imported')
+  check(src.includes('ctx.agentPresets') && src.includes('generation map'), 'preset adapter uses and validates the host registry')
   check(!/from\s*["']@deepseek-ai\/dsh-agent-presets["']/.test(src), 'retired dsh-agent-presets package is not imported')
   check(src.includes('"agent/created"') && !src.includes('"agent/session-start"'), 'DSH 0.2 awaited agent lifecycle hook')
 }

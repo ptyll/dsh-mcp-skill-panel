@@ -28,7 +28,7 @@
  */
 import Schema from '@deepseek-ai/schemastery'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
-import { livePresetMounts } from '@deepseek-ai/dsh-agent-preset-registry'
+import { livePresetMounts } from './preset-runtime'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -272,7 +272,7 @@ async function snapshotEnabled(ctx: Context, runtime: CatalogRuntime, caches: Do
     runtime.diag.lastScope = mcpTools > 0
     const entryViews = [
       { entries: [...ctx.loader.entries()], schemas: getSchemasView(ctx, caches, undefined, 500) },
-      ...livePresetMounts(ctx.root.fiber).map((mount) => ({
+      ...livePresetMounts(ctx).map((mount) => ({
         entries: [...mount.tree.entries()], schemas: getSchemasView(ctx, caches, mount.key, 500),
       })),
     ]

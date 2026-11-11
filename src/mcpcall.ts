@@ -207,7 +207,7 @@ function contentText(content: unknown): string {
 /** 可执行一个注册工具的最小视图（宿主 ctx 或调用方 agent ctx 的 tools 服务）。 */
 interface ToolView {
   label: string
-  tools: { get(name: string, scope?: object): unknown; execute(exec: unknown): Promise<unknown> } | undefined
+  tools: Context['tools'] | undefined
   scope: object | undefined
 }
 
@@ -429,13 +429,18 @@ export function createMcpCallController(ctx: Context, caches: McpControlCtx): Mc
         const view = await waitRegistered(ctx, name, views, timeoutMs, signal)
         // view 在 waitRegistered resolve 时必定存在（ToolView 已被解析）
         const execTools = view!.tools!
-        const result = (await execTools.execute({
-          callId: `mcp-call-${randomUUID()}` as import('@deepseek-ai/dsh-llm').ToolCallId,
-          name,
-          arguments: args,
+        const batch = await execTools.execute({
+          calls: [{
+            type: 'tool-call',
+            id: `mcp-call-${randomUUID()}` as import('@deepseek-ai/dsh-llm').ToolCallId,
+            name,
+            arguments: JSON.stringify(args),
+          }],
           agent,
           signal: signal ?? new AbortController().signal,
-        })) as { isError?: boolean; error?: unknown; content?: unknown } | undefined
+        })
+        const result = batch.results[0]?.result
+        if (!result) throw new Error('MCP executor returned no result')
         state.lastUsed.set(entry, Date.now())
         if (result && result.isError) {
           failed = true

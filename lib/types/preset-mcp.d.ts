@@ -5,7 +5,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader';
-import { type PresetMount } from '@deepseek-ai/dsh-agent-preset-registry';
+import type { PresetMount } from '@deepseek-ai/dsh-agent-preset-registry';
 /** A preset's state key is an identity, never a filesystem path in DSH 0.2. */
 export declare const presetStateKey: (presetId: string) => string;
 export declare function selectedPresetMount(ctx: Context, agent?: Agent): PresetMount | undefined;

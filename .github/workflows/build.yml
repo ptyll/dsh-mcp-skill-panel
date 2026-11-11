@@ -67,7 +67,7 @@ jobs:
       - name: Selftest (P1 session-boundary apply chain)
         run: node scripts/selftest-pending.mjs
 
-      - name: Selftest (DSH 0.2.0-rc.2 runtime integration)
+      - name: Selftest (DSH 0.2.2-rc.1 runtime integration)
         run: node scripts/selftest-harness.mjs
 
       - name: Upload build artifacts

@@ -85,7 +85,7 @@ For development, run `npm ci --ignore-scripts`, then `npm run typecheck && npm r
 
 For Desktop, replace `--profile web` with `--profile desktop` and fully quit Desktop before installing. **Restart Harness** after installation, then open Settings → **MCP & Skill Manager**. [Upgrade details and validation](docs/upgrade-harness-0.2.2.md).
 
-This checkout does not publish an npm release or a GitHub tag. Older tags keep their original code.
+Install the GitHub release directly with `dsh plugin --profile web add "github:ptyll/dsh-mcp-skill-panel#v0.8.0"`, or download the package from the [v0.8.0 release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.8.0). This fork release is not published to npm. Older tags keep their original code.
 
 ## 🚀 Usage
 

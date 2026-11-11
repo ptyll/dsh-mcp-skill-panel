@@ -123,7 +123,7 @@ npm pack --ignore-scripts
 dsh plugin --profile web add ./dsh-mcp-skill-panel-0.8.0.tgz
 ```
 
-开发验证：`npm ci --ignore-scripts`，然后运行 `npm run typecheck && npm run build && npm run verify && npm test`。安装后重启 Harness；Desktop 请完全退出后使用 `--profile desktop`。本次修改尚未发布 GitHub tag 或 npm 版本。
+开发验证：`npm ci --ignore-scripts`，然后运行 `npm run typecheck && npm run build && npm run verify && npm test`。安装后重启 Harness；Desktop 请完全退出后使用 `--profile desktop`。可直接安装 GitHub release：`dsh plugin --profile web add "github:ptyll/dsh-mcp-skill-panel#v0.8.0"`。本 fork 版本不发布到 npm。
 
 ## 🚀 使用
 

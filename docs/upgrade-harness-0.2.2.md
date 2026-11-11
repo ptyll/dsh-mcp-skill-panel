@@ -14,7 +14,12 @@ dsh plugin --profile web add ./dsh-mcp-skill-panel-0.8.0.tgz
 ```
 
 Restart DSH after installation. For Desktop, fully quit the application and use
-`--profile desktop`. This change does not itself publish a release or Git tag.
+`--profile desktop`. The [v0.8.0 release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.8.0)
+includes the package. Alternatively, install the versioned Git source:
+
+```sh
+dsh plugin --profile web add "github:ptyll/dsh-mcp-skill-panel#v0.8.0"
+```
 
 ## Compatibility boundary
 

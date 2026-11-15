@@ -1,4 +1,4 @@
-/** DSH 0.2.2-rc.1 compatibility boundary for live preset mutation.
+/** DSH 0.2.2-rc.3 compatibility boundary for live preset mutation.
  *
  * The public composition inventory intentionally returns detached diagnostics,
  * not mutable Loader entries. MCP toggles still need the host's actual entries.

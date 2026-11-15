@@ -33,7 +33,7 @@ const profileNodeModules = candidates.find(candidate => candidate && existsSync(
 const localScoped = join(root, 'node_modules', '@deepseek-ai')
 
 if (!profileNodeModules) {
-  console.error('DSH closure not found; install DSH 0.2.2-rc.1 or set DSH_NODE_MODULES to its node_modules directory')
+  console.error('DSH closure not found; install DSH 0.2.2-rc.3 or set DSH_NODE_MODULES to its node_modules directory')
   process.exit(1)
 }
 

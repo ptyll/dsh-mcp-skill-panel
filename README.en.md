@@ -9,7 +9,7 @@
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.8.0-green.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.8.1-green.svg">
 </p>
 
 ---
@@ -74,18 +74,24 @@ flowchart TD
 
 ## 📦 Install
 
-Version **0.8.0** targets exactly **DeepSeek Harness 0.2.2-rc.1**. Package the prebuilt files in this checkout and install the resulting archive:
+Version **0.8.1** targets exactly **DeepSeek Harness 0.2.2-rc.3**. Package the prebuilt files in this checkout and install the resulting archive:
 
 ```sh
 npm pack --ignore-scripts
-dsh plugin --profile web add ./dsh-mcp-skill-panel-0.8.0.tgz
+dsh plugin --profile web add ./dsh-mcp-skill-panel-0.8.1.tgz
 ```
 
 For development, run `npm ci --ignore-scripts`, then `npm run typecheck && npm run build && npm run verify && npm test` before packaging.
 
 For Desktop, replace `--profile web` with `--profile desktop` and fully quit Desktop before installing. **Restart Harness** after installation, then open Settings → **MCP & Skill Manager**. [Upgrade details and validation](docs/upgrade-harness-0.2.2.md).
 
-Install the GitHub release directly with `dsh plugin --profile web add "github:ptyll/dsh-mcp-skill-panel#v0.8.0"`, or download the package from the [v0.8.0 release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.8.0). This fork release is not published to npm. Older tags keep their original code.
+Install directly from the [v0.8.1 GitHub release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.8.1):
+
+```sh
+dsh plugin --profile web add "github:ptyll/dsh-mcp-skill-panel#v0.8.1"
+```
+
+The release also includes the installable `dsh-mcp-skill-panel-0.8.1.tgz` archive. This fork is not published to npm; older tags keep their original code (`v0.8.0` targets DSH 0.2.2-rc.1).
 
 ## 🚀 Usage
 
@@ -194,7 +200,7 @@ npm ci --ignore-scripts   # pinned dependencies, including the DSH peer closure 
 npm run typecheck  # tsc type check (Context service augmentation comes from @deepseek-ai devDeps)
 npm run build      # tsdown (node external all @deepseek-ai/*) -> tsc dts last (order matters)
 npm run verify     # artifact verification (no inlined TOOL_RUNTIME_SCHEDULER, client wrapper, lib/types)
-npm test           # catalog, pending-state, real DSH rc.2 integration and smoke tests
+npm test           # catalog, pending-state, real DSH 0.2.2-rc.3 integration and smoke tests
 ```
 
 > **lib/ artifacts are rebuilt by GitHub Actions** (`.github/workflows/build.yml`): push your source, CI runs typecheck → build → verify → selftest and, on `main`, commits the fresh `lib/` back with `[skip ci]` — remember to `git pull` to collect it.
@@ -206,6 +212,7 @@ The node-half tsdown build must use `external: [/^@deepseek-ai\//]`: inlining ds
 
 | Version | Content |
 | --- | --- |
+| 0.8.1 | Harness 0.2.2-rc.3: replace removed agents.roots() with list() and session parent metadata; verify root/child selection and diagnostics against the real Agent registry; update pinned dependencies, lockfiles and prebuilt files. |
 | 0.8.0 | Harness 0.2.2-rc.1: guarded live-preset adapter, batch tool execution, revision isolation tests, updated dependencies and prebuilt files. |
 | 0.7.0 | Harness 0.2.0-rc.2: declarative preset registry, revision-qualified MCP handles, preset identity persistence, awaited agent/created initialization, per-session scope lookup, correct middle-layer calls across presets, and runtime integration tests. |
 | 0.5.0 | Prompt Cache optimization (P0+P1, issue #1): mid-session toggle miss warning banner (red severe variant for large packs, 12s auto-dismiss); apply-timing immediate / next-session (the latter records intent into a pending queue, applied at `agent/session-start` or on restart materialization — zero miss for the current session); toggles coalesced into a single toggleBatch (single invalidateMcp); applyPendingMcp state-residue fallback (rows with desired ≠ live after restart/hot-reload are applied; externally modified rows are respected and cleared) + new selftest-pending chain test (in CI); toggleBatch partial failures no longer abort the batch; updated cover image |

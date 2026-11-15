@@ -129,9 +129,8 @@ export function resolveAgent(ctx: Context, sessionId: string | undefined) {
     const byId = ctx.agents.get(sessionId as Parameters<typeof ctx.agents.get>[0])
     if (byId) return byId
   }
-  const roots = ctx.agents.roots()
-  if (roots.length > 0) return roots[0]
-  return ctx.agents.list()[0]
+  const agents = ctx.agents.list()
+  return agents.find(agent => agent.session.header.parentSession === undefined) ?? agents[0]
 }
 
 /** Resolve on each read: sessions and retained preset revisions have distinct scopes.

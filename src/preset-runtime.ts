@@ -1,4 +1,4 @@
-/** DSH 0.2.2-rc.1 compatibility boundary for live preset mutation.
+/** DSH 0.2.2-rc.3 compatibility boundary for live preset mutation.
  *
  * The public composition inventory intentionally returns detached diagnostics,
  * not mutable Loader entries. MCP toggles still need the host's actual entries.
@@ -17,7 +17,7 @@ interface Generation {
 function generations(ctx: Context): Map<object, Generation> {
   const records = (ctx.agentPresets as unknown as { generations?: Map<object, Generation> }).generations
   if (!(records instanceof Map)) {
-    throw new Error('MCP & Skill Manager: unsupported preset registry; expected DSH 0.2.2-rc.1 generation map')
+    throw new Error('MCP & Skill Manager: unsupported preset registry; expected DSH 0.2.2-rc.3 generation map')
   }
   for (const [key, record] of records) {
     const mount = record?.mount

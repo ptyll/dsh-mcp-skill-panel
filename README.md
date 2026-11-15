@@ -9,12 +9,12 @@
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.8.0-green.svg">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.8.1-green.svg">
 </p>
 
 ---
 
-> **v0.8.0 / DSH 0.2.2-rc.1**：迁移到声明式 `dsh-agent-preset-registry`，启停直接操作当前预设代际，状态按 preset/row 保存；新会话使用可等待的 `agent/created`。旧 `v0.6.1` tag 不支持此 API。详见 [升级说明](docs/upgrade-harness-0.2.2.md) 和 [English README](README.en.md)。
+> **v0.8.1 / DSH 0.2.2-rc.3**：适配移除 `agents.roots()` 后的会话选择和诊断，使用 `agents.list()` 与 `session.header.parentSession` 区分主会话和子会话；更新依赖并通过真实运行时集成测试。详见 [升级说明](docs/upgrade-harness-0.2.2.md) 和 [English README](README.en.md)。
 
 ## ✨ 是什么
 
@@ -116,14 +116,20 @@ flowchart TD
 
 ## 📦 安装
 
-v0.8.0 面向 DeepSeek Harness 0.2.2-rc.1。本 checkout 已包含预构建产物，可打包后安装：
+v0.8.1 面向 DeepSeek Harness 0.2.2-rc.3。本 checkout 已包含预构建产物，可打包后安装：
 
 ```sh
 npm pack --ignore-scripts
-dsh plugin --profile web add ./dsh-mcp-skill-panel-0.8.0.tgz
+dsh plugin --profile web add ./dsh-mcp-skill-panel-0.8.1.tgz
 ```
 
-开发验证：`npm ci --ignore-scripts`，然后运行 `npm run typecheck && npm run build && npm run verify && npm test`。安装后重启 Harness；Desktop 请完全退出后使用 `--profile desktop`。可直接安装 GitHub release：`dsh plugin --profile web add "github:ptyll/dsh-mcp-skill-panel#v0.8.0"`。本 fork 版本不发布到 npm。
+也可从 [v0.8.1 GitHub release](https://github.com/ptyll/dsh-mcp-skill-panel/releases/tag/v0.8.1) 直接安装：
+
+```sh
+dsh plugin --profile web add "github:ptyll/dsh-mcp-skill-panel#v0.8.1"
+```
+
+Release 同时提供 `dsh-mcp-skill-panel-0.8.1.tgz` 安装包。开发验证：`npm ci --ignore-scripts`，然后运行 `npm run typecheck && npm run build && npm run verify && npm test`。安装后重启 Harness；Desktop 请完全退出后使用 `--profile desktop`。已有 `v0.8.0` tag 面向 DSH 0.2.2-rc.1。本 fork 版本不发布到 npm。
 
 ## 🚀 使用
 
@@ -249,7 +255,7 @@ npm run build      # tsdown（node external 全部 @deepseek-ai/*）→ 最后 t
 npm run verify     # 产物验证（无 TOOL_RUNTIME_SCHEDULER 内联、client 包装完整、lib/types 齐全）
 node scripts/selftest-mcp.mjs  # catalog / convert / preset 纯逻辑单测（含 computeStatus 等回归）
 node scripts/selftest-pending.mjs  # P1 会话边界应用链单测
-node scripts/selftest-harness.mjs  # DSH 0.2.2-rc.1 真实服务集成测试
+node scripts/selftest-harness.mjs  # DSH 0.2.2-rc.3 真实服务集成测试
 ```
 
 > **lib/ 产物由 GitHub Actions 自动重建**（`.github/workflows/build.yml`）：提交源码后推送，CI 跑 typecheck→build→verify→selftest，在 main 分支把新 `lib/` 以 `[skip ci]` 提交回写；本地记得 pull 收产物。

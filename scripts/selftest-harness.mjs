@@ -1,4 +1,4 @@
-// Integration with the published DSH 0.2.2-rc.1 services; no model/API key needed.
+// Integration with the published DSH 0.2.2-rc.3 services; no model/API key needed.
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
@@ -17,10 +17,11 @@ import Tools from '@deepseek-ai/dsh-tools'
 import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import Skills from '@deepseek-ai/dsh-skill'
 import Presets from '@deepseek-ai/dsh-agent-preset-registry'
+import Agents from '@deepseek-ai/dsh-agent'
 import { evaluatePluginCompatibility } from '@deepseek-ai/dsh-app-boot'
-import { createScope, scopeTarget, scopeOf } from '@deepseek-ai/dsh-scope'
+import { createScope } from '@deepseek-ai/dsh-scope'
 
-const temporary = await mkdtemp(join(os.tmpdir(), 'dsh-rc2-selftest-'))
+const temporary = await mkdtemp(join(os.tmpdir(), 'dsh-rc3-selftest-'))
 mock.method(os, 'homedir', () => temporary)
 syncBuiltinESMExports()
 const panel = await import('../lib/index.js')
@@ -33,13 +34,12 @@ async function harness() {
   await ctx.plugin(Timer)
   await ctx.plugin(SessionStore)
   await ctx.plugin(Projections)
+  await ctx.plugin(Agents)
   await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(Tools)
   await ctx.plugin(NativeExecutor)
   await ctx.plugin(Skills)
   await ctx.plugin(Presets, { default: 'standard' })
-  const agents = new Map()
-  ctx.provide('agents', { get: id => agents.get(id), roots: () => [...agents.values()], list: () => [...agents.values()] })
   ctx.provide('fs', {})
   const routes = new Map()
   ctx.provide('webServer', { register: route => {
@@ -84,13 +84,12 @@ async function harness() {
     assert.equal(result.ok, true, JSON.stringify(result))
     return result
   }
-  const agent = async (preset, id) => {
-    const agent = { id, session: ctx.sessions.create(id, { meta: { cwd: temporary } }) }
+  const agent = async (preset, id, parentSession) => {
+    const agent = { id, session: ctx.sessions.create(id, { meta: { cwd: temporary, parentSession } }) }
     const scope = createScope(ctx, agent)
     agent.ctx = scope.ctx
     await ctx.agentPresets.mount(scope.ctx, preset)
-    agents.set(id, agent)
-    await ctx.serial(scopeTarget(agent, scopeOf(scope.ctx)), 'agent/created', { agent, source: 'create' })
+    await ctx.agents.register(agent)
     return agent
   }
   return { ctx, request, agent }
@@ -98,10 +97,11 @@ async function harness() {
 
 try {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.2-rc.1'), undefined)
-  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.1.2-rc.1'))
-  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.2.0-rc.2'))
-  console.log('ok   plugin compatibility policy accepts 0.2.2-rc.1 and rejects older runtimes')
+  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.2-rc.3'), undefined)
+  for (const version of ['0.1.2-rc.1', '0.2.0-rc.2', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.4']) {
+    assert.ok(evaluatePluginCompatibility(manifest, {}, version), `reject unvalidated DSH ${version}`)
+  }
+  console.log('ok   plugin compatibility policy accepts 0.2.2-rc.3 and rejects unvalidated runtimes')
   await panel.writeState({})
   const h = await harness()
   const initial = (await h.request('/state')).state
@@ -119,8 +119,16 @@ try {
   assert.equal((await h.request('/debug')).catalog.unique.tools, 1, 'catalog includes non-default presets')
   console.log('ok   DSH 0.2 registry: MCP inventory and schemas before any session')
 
+  await h.agent('other', 'child', 'first')
   const first = await h.agent('standard', 'first')
   const second = await h.agent('other', 'second')
+  assert.deepEqual((await h.request('/state')).state.skills.map(row => row.name), ['skill-standard'],
+    'agentless reads prefer a root session even when a child was registered first')
+  await h.request('/debug/collect', {})
+  const diag = (await h.request('/debug')).diag
+  assert.equal(diag.lastAgentRoots, 2)
+  assert.equal(diag.lastAgentList, 3)
+  console.log('ok   rc.3 agent list resolves root sessions and reports child-aware diagnostics')
   const state = async id => (await h.request(`/state?session=${id}`)).state
   const a = await state(first.id)
   const b = await state(second.id)

@@ -254,8 +254,9 @@ async function snapshotEnabled(ctx: Context, runtime: CatalogRuntime, caches: Do
     let rootsCount = 0
     let listCount = 0
     try {
-      rootsCount = ctx.agents.roots().length
-      listCount = ctx.agents.list().length
+      const agents = ctx.agents.list()
+      rootsCount = agents.filter(agent => agent.session.header.parentSession === undefined).length
+      listCount = agents.length
     } catch {
       rootsCount = -1
       listCount = -1
